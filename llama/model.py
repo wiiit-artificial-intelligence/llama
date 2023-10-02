@@ -29,6 +29,7 @@ class ModelArgs:
 
     max_batch_size: int = 32
     max_seq_len: int = 2048
+    device: Optional[str] = 'cuda'
 
 
 class RMSNorm(torch.nn.Module):
@@ -203,6 +204,7 @@ class Attention(nn.Module):
         self.n_local_kv_heads = self.n_kv_heads // model_parallel_size
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = args.dim // args.n_heads
+        self.device = args.device
 
         self.wq = ColumnParallelLinear(
             args.dim,
@@ -240,7 +242,7 @@ class Attention(nn.Module):
                 self.n_local_kv_heads,
                 self.head_dim,
             )
-        ).cuda()
+        ).to(device=self.device)
         self.cache_v = torch.zeros(
             (
                 args.max_batch_size,
@@ -248,7 +250,7 @@ class Attention(nn.Module):
                 self.n_local_kv_heads,
                 self.head_dim,
             )
-        ).cuda()
+        ).to(device=self.device)
 
     def forward(
         self,
@@ -433,6 +435,7 @@ class Transformer(nn.Module):
         self.params = params
         self.vocab_size = params.vocab_size
         self.n_layers = params.n_layers
+        self.device = params.device
 
         self.tok_embeddings = ParallelEmbedding(
             params.vocab_size, params.dim, init_method=lambda x: x

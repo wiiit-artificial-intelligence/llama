@@ -1,0 +1,16 @@
+
+services:
+  llama-dev:
+    image: python:3.10.12
+    working_dir: /app
+    volumes:
+      - ..:/app
+    environment:
+      - RANK=0
+      - WORLD_SIZE=1
+      - MASTER_ADDR=localhost
+      - MASTER_PORT=12345
+    network_mode: host
+    stdin_open: true
+    tty: true
+    command: ["/bin/bash"]
