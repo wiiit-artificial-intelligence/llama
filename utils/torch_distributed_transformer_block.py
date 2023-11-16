@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 import torch
 import torch.nn.functional as F
+import itertools
 
 from fairscale.nn.model_parallel.initialize import (
     get_model_parallel_rank,
@@ -515,20 +516,27 @@ print(f"{local_rank+1}/{model_parallel_size}")
 if not model_parallel_is_initialized():
     print("Init model parallel")
     initialize_model_parallel(model_parallel_size)
-    # print(fs_init.get_model_parallel_world_size())
 
-n_runs = 20
+n_runs = 1
 batch_size = 1
-seqlen = 2048
-start_pos = 0
+model_args_list = [ModelArgs7b, ModelArgs13b, ModelArgs34b, ModelArgs70b]
 
-# model_args_list = [ModelArgs7b, ModelArgs13b, ModelArgs34b, ModelArgs70b]
-model_args_list = [ModelArgs7b]
-# model_args_list = [ModelArgs70b]
+seq_ini_len_list = [1, 32, 128, 512, 1024, 2048]
+loop_j_list = [0, 1]
 
+run_combination = list(itertools.product(model_args_list, seq_ini_len_list, loop_j_list))
 
-for model_args_class in model_args_list:
-    print(model_args_class)
+for run_params in run_combination:
+    model_args_class, seq_ini_len, loop_j = run_params
+    print(model_args_class, seq_ini_len, loop_j)
+
+    if loop_j == 0:
+        seqlen = seq_ini_len
+        start_pos = 0
+    else:
+        seqlen = 1
+        start_pos = seq_ini_len + loop_j
+
     model_args = model_args_class()
 
     if model_args.device == 'cuda':
@@ -540,10 +548,7 @@ for model_args_class in model_args_list:
         torch.set_default_dtype(torch.float32)
         # torch.set_default_dtype(torch.bfloat16)
 
-    # attention = Attention(model_args)
     transformer = TransformerBlock(layer_id=0, args=model_args).eval()
-    # print(transformer.feed_forward.hidden_dim)
-    # continue
 
     freqs_cis = precompute_freqs_cis(
                 # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096. 
@@ -568,29 +573,9 @@ for model_args_class in model_args_list:
         )
         mask = torch.triu(mask, diagonal=start_pos + 1).type_as(x)
 
-    start_time = time.time()
-    with torch.no_grad():
-        for _ in range(n_runs):
-            # y = attention.forward(x, start_pos=start_pos, freqs_cis=freqs_cis, mask=mask)
-            y = transformer.forward(x, start_pos=start_pos, freqs_cis=freqs_cis, mask=mask)
-    if local_rank == 0:
-        print(f"Execution time (mean over {n_runs} runs) = {(time.time() - start_time)*1e3/n_runs:.3f} ms")
-        print(f"Execution time (mean over {n_runs} runs) * {model_args.n_layers} layers = {(time.time() - start_time)*model_args.n_layers/n_runs:.3f} s")
-
-    print(y.size())
-    print(y.dtype)
-    
-    with profile(activities=[ProfilerActivity.CPU], profile_memory=True, record_shapes=True) as prof:
-        with record_function("model_inference"):
-            y = transformer.forward(x, start_pos=start_pos, freqs_cis=freqs_cis, mask=mask)
-    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
-    # prof.export_chrome_trace(f"trace_{str(model_args_class)}.json")
-
     with profile(activities=[ProfilerActivity.CPU], profile_memory=True, record_shapes=True) as prof:
         y = transformer.forward(x, start_pos=start_pos, freqs_cis=freqs_cis, mask=mask)
-    print(prof.key_averages().table(sort_by="self_cpu_memory_usage", row_limit=10))
-    prof.export_chrome_trace(f"trace_{str(model_args_class.__name__)}_{model_parallel_size}procs_seqlen{seqlen}_start_pos{start_pos}.json")
 
-    
+    prof.export_chrome_trace(f"trace_{str(model_args_class.__name__)}_{model_parallel_size}procs_seqlen{seqlen}_start_pos{start_pos}.json")
 
 torch.distributed.destroy_process_group()
