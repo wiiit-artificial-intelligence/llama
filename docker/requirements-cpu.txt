@@ -1,3 +1,4 @@
-fairscale
-fire
-sentencepiece
+torch==2.1.0
+fairscale==0.4.13
+fire==0.5.0
+sentencepiece==0.1.99

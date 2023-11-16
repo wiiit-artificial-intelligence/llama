@@ -1,0 +1,6 @@
+# Use an official Ubuntu as a parent image
+FROM python:3.10.12
+
+# Intall dependencies
+COPY requirements-cpu.txt requirements.txt
+RUN pip install -r requirements.txt
