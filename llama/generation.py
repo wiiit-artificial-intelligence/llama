@@ -83,6 +83,11 @@ class Llama:
             and loads the pre-trained model and tokenizer.
 
         """
+        if os.environ['BACKEND'] == 'mpi':
+            os.environ["RANK"] = os.environ["OMPI_COMM_WORLD_RANK"]
+            os.environ["LOCAL_RANK"] = os.environ["OMPI_COMM_WORLD_LOCAL_RANK"]
+            os.environ["WORLD_SIZE"] = os.environ["OMPI_COMM_WORLD_SIZE"]
+
         master_addr = os.environ['MASTER_ADDR']
         master_port = os.environ['MASTER_PORT']
         local_rank = int(os.environ["RANK"])
@@ -92,27 +97,28 @@ class Llama:
             if device == 'cuda':
                 torch.distributed.init_process_group("nccl")
             else:
-                torch.distributed.init_process_group("gloo",
-                                                    init_method=f"tcp://{master_addr}:{master_port}",
-                                                    rank=local_rank,
-                                                    world_size=world_size)
+                if os.environ['BACKEND'] == 'mpi':
+                    torch.distributed.init_process_group(os.environ['BACKEND'],
+                                                         init_method='env://')                    
+                else:
+                    torch.distributed.init_process_group(os.environ['BACKEND'],
+                                                         init_method=f"tcp://{master_addr}:{master_port}",
+                                                         rank=local_rank,
+                                                         world_size=world_size)
 
         if not model_parallel_is_initialized():
             if model_parallel_size is None:
                 model_parallel_size = int(os.environ["WORLD_SIZE"])
             initialize_model_parallel(model_parallel_size)
 
-        print(f"{local_rank+1}/{model_parallel_size}")
         if device == 'cuda':
             torch.cuda.set_device(local_rank)
         else:
             torch.device(device)
 
         # seed must be the same in all processes
-        torch.manual_seed(seed)
-
-        # if local_rank > 0:
-        #     sys.stdout = open(os.devnull, "w")
+        torch.manual_seed(seed)        
+        print(f"{local_rank+1}/{model_parallel_size}")
 
         start_time = time.time()
         checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
@@ -243,7 +249,7 @@ class Llama:
                 prev_pos = cur_pos
                 if all(eos_reached):
                     break
-        prof.export_chrome_trace(f"model_inference.json") 
+        prof.export_chrome_trace(f"model_inference.json")
 
         if logprobs:
             token_logprobs = token_logprobs.tolist()

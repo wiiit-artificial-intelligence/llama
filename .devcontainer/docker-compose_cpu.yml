@@ -2,13 +2,20 @@ version: '3.0'
 
 services:
   llama-dev:
-    image: python:3.10.12
+    #image: python:3.10.12
+    image: wiiit/pytorch-mpi:pytorch_v2.0.1-mpi_v4.1.1
     working_dir: /app
     volumes:
       - ..:/app
+      - $HOME/.ssh:/root/.ssh
     environment:
+      - BACKEND=mpi 
       - RANK=0
-      - WORLD_SIZE=4
+      - LOCAL_RANK=0
+      - WORLD_SIZE=2
+      - OMPI_COMM_WORLD_RANK=0
+      - OMPI_COMM_WORLD_LOCAL_RANK=0
+      - OMPI_COMM_WORLD_SIZE=2
       - MASTER_ADDR=10.1.133.12
       - MASTER_PORT=12345
     network_mode: host
