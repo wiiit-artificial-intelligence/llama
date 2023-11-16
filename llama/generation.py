@@ -132,7 +132,7 @@ class Llama:
         tokenizer = Tokenizer(model_path=tokenizer_path)
         model_args.vocab_size = tokenizer.n_words
         if device == 'cuda':
-            torch.set_default_dtype(torch.cuda.HalfTensor)
+            torch.set_default_tensor_type(torch.cuda.HalfTensor)
         else:
             # Set-up FP32 for more than 1 worker/node/VM cause GLOO does not suport FP16.
             # For one worker we set FP16 as default type before load checpoints due memory constrains.
