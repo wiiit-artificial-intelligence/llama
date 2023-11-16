@@ -1,3 +1,4 @@
+version: '3.0'
 
 services:
   llama-dev:
@@ -7,8 +8,8 @@ services:
       - ..:/app
     environment:
       - RANK=0
-      - WORLD_SIZE=1
-      - MASTER_ADDR=localhost
+      - WORLD_SIZE=4
+      - MASTER_ADDR=10.1.133.12
       - MASTER_PORT=12345
     network_mode: host
     stdin_open: true
