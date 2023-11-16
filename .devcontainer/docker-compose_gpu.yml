@@ -1,23 +1,19 @@
+version: '3.8'
 
 services:
   llama-dev:
-    image: nvcr.io/nvidia/pytorch:22.04-py3
+    image: wiiit/llama-gpu:pytorch.v23.04-py3
     working_dir: /app
     volumes:
       - ..:/app
-    environment:
-      - RANK=0
-      - WORLD_SIZE=1
-      - MASTER_ADDR=localhost
-      - MASTER_PORT=12345
     network_mode: host
     stdin_open: true
     tty: true
     deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    command: ["/bin/bash"]
+          resources:
+            reservations:
+              devices:
+                - driver: nvidia
+                  count: 1
+                  capabilities: [gpu]
+    command: /bin/bash -c "pip install -e . && /bin/bash"

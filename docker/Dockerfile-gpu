@@ -1,0 +1,6 @@
+# Use an official Ubuntu as a parent image
+FROM nvcr.io/nvidia/pytorch:23.04-py3
+
+# Intall dependencies
+COPY requirements-gpu.txt requirements.txt
+RUN pip install -r requirements.txt
