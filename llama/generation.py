@@ -18,6 +18,7 @@ from fairscale.nn.model_parallel.initialize import (
 
 from llama.model import ModelArgs, Transformer
 from llama.tokenizer import Tokenizer
+from torch.profiler import profile
 
 Role = Literal["system", "user", "assistant"]
 
@@ -82,17 +83,26 @@ class Llama:
             and loads the pre-trained model and tokenizer.
 
         """
+        master_addr = os.environ['MASTER_ADDR']
+        master_port = os.environ['MASTER_PORT']
+        local_rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+
         if not torch.distributed.is_initialized():
             if device == 'cuda':
                 torch.distributed.init_process_group("nccl")
             else:
-                torch.distributed.init_process_group("gloo")
+                torch.distributed.init_process_group("gloo",
+                                                    init_method=f"tcp://{master_addr}:{master_port}",
+                                                    rank=local_rank,
+                                                    world_size=world_size)
+
         if not model_parallel_is_initialized():
             if model_parallel_size is None:
-                model_parallel_size = int(os.environ.get("WORLD_SIZE", 1))
+                model_parallel_size = int(os.environ["WORLD_SIZE"])
             initialize_model_parallel(model_parallel_size)
 
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        print(f"{local_rank+1}/{model_parallel_size}")
         if device == 'cuda':
             torch.cuda.set_device(local_rank)
         else:
@@ -101,8 +111,8 @@ class Llama:
         # seed must be the same in all processes
         torch.manual_seed(seed)
 
-        if local_rank > 0:
-            sys.stdout = open(os.devnull, "w")
+        # if local_rank > 0:
+        #     sys.stdout = open(os.devnull, "w")
 
         start_time = time.time()
         checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
@@ -111,6 +121,7 @@ class Llama:
             checkpoints
         ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
         ckpt_path = checkpoints[get_model_parallel_rank()]
+        print(f"local-rank: {local_rank} - {ckpt_path} - {get_model_parallel_rank()}")
         checkpoint = torch.load(ckpt_path, map_location=torch.device(device=device))
         with open(Path(ckpt_dir) / "params.json", "r") as f:
             params = json.loads(f.read())
@@ -124,12 +135,15 @@ class Llama:
         tokenizer = Tokenizer(model_path=tokenizer_path)
         model_args.vocab_size = tokenizer.n_words
         if device == 'cuda':
-            torch.set_default_tensor_type(torch.cuda.HalfTensor)
+            torch.set_default_dtype(torch.cuda.HalfTensor)
         else:
-            torch.set_default_tensor_type(torch.BFloat16Tensor)
+            if world_size > 1:
+                torch.set_default_dtype(torch.float32)
+            else:
+                torch.set_default_dtype(torch.bfloat16)
         model = Transformer(model_args)
-        if device == 'cpu':
-            torch.set_default_tensor_type(torch.FloatTensor)
+        if device == 'cpu' and world_size == 1:
+            torch.set_default_dtype(torch.float32)
         model.load_state_dict(checkpoint, strict=False)
         print(f"Loaded in {time.time() - start_time:.2f} seconds")
 
@@ -140,7 +154,7 @@ class Llama:
         self.tokenizer = tokenizer
         self.device=device
 
-    @torch.inference_mode()
+    #@torch.inference_mode()
     def generate(
         self,
         prompt_tokens: List[List[int]],
@@ -187,45 +201,49 @@ class Llama:
         if logprobs:
             token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
 
-        prev_pos = 0
-        eos_reached = torch.tensor([False] * bsz, device=device)
-        input_text_mask = tokens != pad_id
-        if min_prompt_len == total_len:
-            logits = self.model.forward(tokens, prev_pos)
-            token_logprobs = -F.cross_entropy(
-                input=logits.transpose(1, 2),
-                target=tokens,
-                reduction="none",
-                ignore_index=pad_id,
-            )
-
-        for cur_pos in range(min_prompt_len, total_len):
-            logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
-            if temperature > 0:
-                probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
-                next_token = sample_top_p(probs, top_p)
-            else:
-                next_token = torch.argmax(logits[:, -1], dim=-1)
-
-            next_token = next_token.reshape(-1)
-            # only replace token if prompt has already been generated
-            next_token = torch.where(
-                input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
-            )
-            tokens[:, cur_pos] = next_token
-            if logprobs:
-                token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
+        with profile(record_shapes=True, 
+                    profile_memory=True,
+                    with_flops=True) as prof:
+            prev_pos = 0
+            eos_reached = torch.tensor([False] * bsz, device=device)
+            input_text_mask = tokens != pad_id
+            if min_prompt_len == total_len:
+                logits = self.model.forward(tokens, prev_pos)
+                token_logprobs = -F.cross_entropy(
                     input=logits.transpose(1, 2),
-                    target=tokens[:, prev_pos + 1 : cur_pos + 1],
+                    target=tokens,
                     reduction="none",
                     ignore_index=pad_id,
                 )
-            eos_reached |= (~input_text_mask[:, cur_pos]) & (
-                next_token == self.tokenizer.eos_id
-            )
-            prev_pos = cur_pos
-            if all(eos_reached):
-                break
+
+            for cur_pos in range(min_prompt_len, total_len):
+                logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+                if temperature > 0:
+                    probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
+                    next_token = sample_top_p(probs, top_p)
+                else:
+                    next_token = torch.argmax(logits[:, -1], dim=-1)
+
+                next_token = next_token.reshape(-1)
+                # only replace token if prompt has already been generated
+                next_token = torch.where(
+                    input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
+                )
+                tokens[:, cur_pos] = next_token
+                if logprobs:
+                    token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
+                        input=logits.transpose(1, 2),
+                        target=tokens[:, prev_pos + 1 : cur_pos + 1],
+                        reduction="none",
+                        ignore_index=pad_id,
+                    )
+                eos_reached |= (~input_text_mask[:, cur_pos]) & (
+                    next_token == self.tokenizer.eos_id
+                )
+                prev_pos = cur_pos
+                if all(eos_reached):
+                    break
+        prof.export_chrome_trace(f"model_inference.json") 
 
         if logprobs:
             token_logprobs = token_logprobs.tolist()
