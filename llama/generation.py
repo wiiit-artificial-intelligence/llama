@@ -83,28 +83,20 @@ class Llama:
             and loads the pre-trained model and tokenizer.
 
         """
-        if os.environ['BACKEND'] == 'mpi':
-            os.environ["RANK"] = os.environ["OMPI_COMM_WORLD_RANK"]
-            os.environ["LOCAL_RANK"] = os.environ["OMPI_COMM_WORLD_LOCAL_RANK"]
-            os.environ["WORLD_SIZE"] = os.environ["OMPI_COMM_WORLD_SIZE"]
-
         master_addr = os.environ['MASTER_ADDR']
         master_port = os.environ['MASTER_PORT']
         local_rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
 
+        backend='gloo'
+        if device=='cuda':
+            backend='nccl'
+
         if not torch.distributed.is_initialized():
-            if device == 'cuda':
-                torch.distributed.init_process_group("nccl")
-            else:
-                if os.environ['BACKEND'] == 'mpi':
-                    torch.distributed.init_process_group(os.environ['BACKEND'],
-                                                         init_method='env://')                    
-                else:
-                    torch.distributed.init_process_group(os.environ['BACKEND'],
-                                                         init_method=f"tcp://{master_addr}:{master_port}",
-                                                         rank=local_rank,
-                                                         world_size=world_size)
+            torch.distributed.init_process_group(backend=backend,
+                                                 init_method=f"tcp://{master_addr}:{master_port}",
+                                                 rank=local_rank,
+                                                 world_size=world_size)
 
         if not model_parallel_is_initialized():
             if model_parallel_size is None:
@@ -118,7 +110,6 @@ class Llama:
 
         # seed must be the same in all processes
         torch.manual_seed(seed)        
-        print(f"{local_rank+1}/{model_parallel_size}")
 
         start_time = time.time()
         checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
@@ -143,6 +134,8 @@ class Llama:
         if device == 'cuda':
             torch.set_default_dtype(torch.cuda.HalfTensor)
         else:
+            # Set-up FP32 for more than 1 worker/node/VM cause GLOO does not suport FP16.
+            # For one worker we set FP16 as default type before load checpoints due memory constrains.
             if world_size > 1:
                 torch.set_default_dtype(torch.float32)
             else:
@@ -151,7 +144,7 @@ class Llama:
         if device == 'cpu' and world_size == 1:
             torch.set_default_dtype(torch.float32)
         model.load_state_dict(checkpoint, strict=False)
-        print(f"Loaded in {time.time() - start_time:.2f} seconds")
+        print(f"Shard {ckpt_path} loaded in {time.time() - start_time:.2f} seconds")
 
         return Llama(model, tokenizer, device)
 
@@ -191,7 +184,7 @@ class Llama:
         """
         params = self.model.params
         device = self.device
-        print(f"Inference using {device}")
+        print(f"Performing inference in {device}")
         bsz = len(prompt_tokens)
         assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
 
@@ -207,49 +200,54 @@ class Llama:
         if logprobs:
             token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
 
-        with profile(record_shapes=True, 
-                    profile_memory=True,
-                    with_flops=True) as prof:
-            prev_pos = 0
-            eos_reached = torch.tensor([False] * bsz, device=device)
-            input_text_mask = tokens != pad_id
-            if min_prompt_len == total_len:
-                logits = self.model.forward(tokens, prev_pos)
-                token_logprobs = -F.cross_entropy(
+        # Uncomment if you wanna profile inference with Pytorch
+        # 
+        # with profile(record_shapes=True, 
+        #             profile_memory=True,
+        #             with_flops=True) as prof:
+        start_time = time.time()
+        prev_pos = 0
+        eos_reached = torch.tensor([False] * bsz, device=device)
+        input_text_mask = tokens != pad_id
+        if min_prompt_len == total_len:
+            logits = self.model.forward(tokens, prev_pos)
+            token_logprobs = -F.cross_entropy(
+                input=logits.transpose(1, 2),
+                target=tokens,
+                reduction="none",
+                ignore_index=pad_id,
+            )
+
+        for cur_pos in range(min_prompt_len, total_len):
+            logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+            if temperature > 0:
+                probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
+                next_token = sample_top_p(probs, top_p)
+            else:
+                next_token = torch.argmax(logits[:, -1], dim=-1)
+
+            next_token = next_token.reshape(-1)
+            # only replace token if prompt has already been generated
+            next_token = torch.where(
+                input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
+            )
+            tokens[:, cur_pos] = next_token
+            if logprobs:
+                token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
                     input=logits.transpose(1, 2),
-                    target=tokens,
+                    target=tokens[:, prev_pos + 1 : cur_pos + 1],
                     reduction="none",
                     ignore_index=pad_id,
                 )
-
-            for cur_pos in range(min_prompt_len, total_len):
-                logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
-                if temperature > 0:
-                    probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
-                    next_token = sample_top_p(probs, top_p)
-                else:
-                    next_token = torch.argmax(logits[:, -1], dim=-1)
-
-                next_token = next_token.reshape(-1)
-                # only replace token if prompt has already been generated
-                next_token = torch.where(
-                    input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
-                )
-                tokens[:, cur_pos] = next_token
-                if logprobs:
-                    token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
-                        input=logits.transpose(1, 2),
-                        target=tokens[:, prev_pos + 1 : cur_pos + 1],
-                        reduction="none",
-                        ignore_index=pad_id,
-                    )
-                eos_reached |= (~input_text_mask[:, cur_pos]) & (
-                    next_token == self.tokenizer.eos_id
-                )
-                prev_pos = cur_pos
-                if all(eos_reached):
-                    break
-        prof.export_chrome_trace(f"model_inference.json")
+            eos_reached |= (~input_text_mask[:, cur_pos]) & (
+                next_token == self.tokenizer.eos_id
+            )
+            prev_pos = cur_pos
+            if all(eos_reached):
+                break
+        elapsed_time = time.time() - start_time
+        print(f"Inference time: {elapsed_time:.2f} seconds.")
+        # prof.export_chrome_trace(f"model_inference.json")
 
         if logprobs:
             token_logprobs = token_logprobs.tolist()

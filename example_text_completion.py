@@ -4,7 +4,7 @@
 import fire
 
 from llama import Llama
-from typing import List
+from typing import List, Optional
 
 def main(
     ckpt_dir: str,
@@ -14,6 +14,7 @@ def main(
     max_seq_len: int = 128,
     max_gen_len: int = 64,
     max_batch_size: int = 4,
+    device: Optional[str] = 'cpu'
 ):
     """
     Entry point of the program for generating text using a pretrained model.
@@ -34,24 +35,25 @@ def main(
         tokenizer_path=tokenizer_path,
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
+        device=device,
     )
 
     prompts: List[str] = [
         # For these prompts, the expected answer is the natural continuation of the prompt
         "I believe the meaning of life is",
-        "Simply put, the theory of relativity states that ",
-        """A brief message congratulating the team on the launch:
+        # "Simply put, the theory of relativity states that ",
+        # """A brief message congratulating the team on the launch:
 
-        Hi everyone,
+        # Hi everyone,
         
-        I just """,
-        # Few shot prompt (providing a few examples before asking model to complete more);
-        """Translate English to French:
+        # I just """,
+        # # Few shot prompt (providing a few examples before asking model to complete more);
+        # """Translate English to Spanish:
         
-        sea otter => loutre de mer
-        peppermint => menthe poivrée
-        plush girafe => girafe peluche
-        cheese =>""",
+        # juice => jugo
+        # peppermint => menta
+        # plush girafe => jirafa de peluche
+        # cheese =>""",
     ]
     results = generator.text_completion(
         prompts,
