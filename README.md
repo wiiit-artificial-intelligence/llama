@@ -52,6 +52,7 @@ torchrun --nproc_per_node 1 example_chat_completion.py \
     --tokenizer_path tokenizer.model \
     --max_seq_len 512 --max_batch_size 6
 ```
+
 **Note**
 - Replace  `llama-2-7b-chat/` with the path to your checkpoint directory and `tokenizer.model` with the path to your tokenizer model.
 - The `–nproc_per_node` should be set to the [MP](#inference) value for the model you are using.
@@ -68,7 +69,27 @@ Different models require different model-parallel (MP) values:
 | 13B    | 2  |
 | 70B    | 8  |
 
-All models support sequence length up to 4096 tokens, but we pre-allocate the cache according to `max_seq_len` and `max_batch_size` values. So set those according to your hardware.
+All models support sequence length up to 4096 tokens, but we pre-allocate the cache according to `max_seq_len` and `max_batch_size` values. So set those according to your hardware. <br>
+This model-parallel represent the number of workers 1 one node.
+
+### Distributed inference with `nnode` > 1
+1. If you wanna run your LLaMa model in a generic infraestructure with more tha one node, you need to shard the model checkpoints. The number of shards, would be the number of worker in the cluster. <br>
+As an example, if you have a cluster with 2 workers, to shard LLaMa 7B checkpoint you should run (in each worker):
+```bash
+python utils/shard_model_checkpoint.py -n 2 -i llama-2-7b-chat/ -o llama-2-7b-chat-2-workers/
+```
+
+2. Once you have the shards in each worker you should run:
+
+- In worker-0
+```bash
+torchrun --nproc_per_node=1 --nnodes=2 --node_rank=0 --master_addr=10.1.133.12 --master_port=12345 example_chat_completion.py --ckpt_dir llama-2-7b-chat-2-workers/  --tokenizer_path tokenizer.model --max_seq_len 512 --max_batch_size 1
+```
+
+- In worker-1
+```bash
+torchrun --nproc_per_node=1 --nnodes=2 --node_rank=1 --master_addr=10.1.133.12 --master_port=12345 example_chat_completion.py --ckpt_dir llama-2-7b-chat-2-workers/  --tokenizer_path tokenizer.model --max_seq_len 512 --max_batch_size 1
+```
 
 ### Pretrained Models
 
