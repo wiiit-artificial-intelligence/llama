@@ -67,7 +67,7 @@ torchrun --nproc_per_node 1 example_chat_completion.py \
 
 **Note**
 - Replace  `<checkpoint_directory>` with the path to your checkpoint directory and `<tokenizer_path>` with the path to your tokenizer model.
-- The `–nproc_per_node` should be set to the [MP](#inference) value for the model you are using.
+- The `–nproc_per_node` represents the number of workers on a node.
 - Adjust the `max_seq_len` and `max_batch_size` parameters as needed.
 - This example runs the [example_chat_completion.py](example_chat_completion.py) found in this repository but you can change that to a different .py file.
 - In case of distributed inference in more than one worker, you must repeat the above steps in each of the workers in your cluster.
