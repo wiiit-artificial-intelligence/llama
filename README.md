@@ -99,6 +99,37 @@ torchrun --nproc_per_node=1 --nnodes=2 --node_rank=0 --master_addr=10.1.133.12 -
 ```bash
 torchrun --nproc_per_node=1 --nnodes=2 --node_rank=1 --master_addr=10.1.133.12 --master_port=12345 example_chat_completion.py --ckpt_dir llama-2-7b-chat-2-workers/  --tokenizer_path tokenizer.model --max_seq_len 512 --max_batch_size 1 --device cpu
 ```
+### Metrics
+
+Below are useful metrics to measure inference speed. Assuming $T$ is the total time, $B$ is the batch size, $L$ is the decoded sequence length.
+
+#### Latency Definition
+Latency is the time it takes to get the decoded result at target length $L$, regardless of the batch size $B$. Latency represents how long the user should wait to get the response from the generation model.
+
+$$ \text{Latency [s]} = T $$
+
+#### Per-token latency
+One step of autoregressive decoding generates a token for each sample in the batch. Per-token latency is the average time for that one step.
+
+$$ \text{Per-token latency [s/token]}= \frac{T}{L} $$
+
+#### Throughput
+Throughput measures how many tokens are generated per unit time. While it’s not a useful metric for evaluating online serving it is useful to measure the speed of batch processing.
+
+$$ \text{Throughput [tokens/s]} = \frac{B * L}{T} $$
+
+
+After running distributed inference, you'll see something like this as inference metrics:
+
+```bash
+------ Inference metrics ------
+Generated tokens: 64
+Latency: 21.22 (s).
+Per-token latency: 0.33 (s/token)
+Throughput: 3.02 (tokens/s)
+-------------------------------
+```
+
 
 ### Pretrained Models
 

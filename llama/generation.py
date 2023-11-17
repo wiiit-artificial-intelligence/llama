@@ -144,7 +144,7 @@ class Llama:
         if device == 'cpu' and world_size == 1:
             torch.set_default_dtype(torch.float32)
         model.load_state_dict(checkpoint, strict=False)
-        print(f"Shard {ckpt_path} loaded in {time.time() - start_time:.2f} seconds")
+        print(f"Shard: {ckpt_path} loaded in {time.time() - start_time:.2f} seconds")
 
         return Llama(model, tokenizer, device)
 
@@ -185,6 +185,7 @@ class Llama:
         params = self.model.params
         device = self.device
         print(f"Performing inference in {device}")
+        start_time = time.time()
         bsz = len(prompt_tokens)
         assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
 
@@ -205,7 +206,6 @@ class Llama:
         # with profile(record_shapes=True, 
         #             profile_memory=True,
         #             with_flops=True) as prof:
-        start_time = time.time()
         prev_pos = 0
         eos_reached = torch.tensor([False] * bsz, device=device)
         input_text_mask = tokens != pad_id
@@ -245,8 +245,7 @@ class Llama:
             prev_pos = cur_pos
             if all(eos_reached):
                 break
-        elapsed_time = time.time() - start_time
-        print(f"Inference time: {elapsed_time:.2f} seconds.")
+
         # prof.export_chrome_trace(f"model_inference.json")
 
         if logprobs:
@@ -266,6 +265,20 @@ class Llama:
                 probs = probs[:eos_idx] if logprobs else None
             out_tokens.append(toks)
             out_logprobs.append(probs)
+
+        elapsed_time = time.time() - start_time
+        
+        L = len(out_tokens[0])
+
+        print()
+        print("------ Inference metrics ------")
+        print(f"Generated tokens: {L}")
+        print(f"Latency: {elapsed_time:.2f} (s).")
+        print(f"Per-token latency: {elapsed_time/L:.2f} (s/token)")
+        print(f"Throughput: {bsz*L/elapsed_time:.2f} (tokens/s)")
+        print("-------------------------------")
+        print()
+
         return (out_tokens, out_logprobs if logprobs else None)
 
     def text_completion(
