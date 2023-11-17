@@ -85,12 +85,32 @@ python utils/shard_model_checkpoint.py -n 2 -i llama-2-7b-chat/ -o llama-2-7b-ch
 
 - In worker-0
 ```bash
-torchrun --nproc_per_node=1 --nnodes=2 --node_rank=0 --master_addr=<ip-address-node-0> --master_port=12345 example_chat_completion.py --ckpt_dir llama-2-7b-chat-2-workers/  --tokenizer_path tokenizer.model --max_seq_len 2048 --max_batch_size 1 --device cpu
+torchrun --nproc_per_node=1 \
+         --nnodes=2 \
+         --node_rank=0 \ 
+         --master_addr=<ip-address-node-0> \
+         --master_port=12345 \
+         example_chat_completion.py \ 
+         --ckpt_dir llama-2-7b-chat-2-workers/  \
+         --tokenizer_path tokenizer.model \
+         --max_seq_len 2048 \
+         --max_batch_size 1 \
+         --device cpu 
 ```
 
 - In worker-1
 ```bash
-torchrun --nproc_per_node=1 --nnodes=2 --node_rank=1 --master_addr=<ip-address-node-0> --master_port=12345 example_chat_completion.py --ckpt_dir llama-2-7b-chat-2-workers/  --tokenizer_path tokenizer.model --max_seq_len 2048 --max_batch_size 1 --device cpu
+torchrun --nproc_per_node=1 \
+         --nnodes=2 \
+         --node_rank=1 \ 
+         --master_addr=<ip-address-node-0> \
+         --master_port=12345 \
+         example_chat_completion.py \
+         --ckpt_dir llama-2-7b-chat-2-workers/ \
+         --tokenizer_path tokenizer.model \
+         --max_seq_len 2048 \
+         --max_batch_size 1 \
+         --device cpu \
 ```
 
 ### Metrics
