@@ -153,7 +153,6 @@ class Llama:
         self.tokenizer = tokenizer
         self.device=device
 
-    #@torch.inference_mode()
     def generate(
         self,
         prompt_tokens: List[List[int]],
@@ -182,104 +181,114 @@ class Llama:
             If logprobs is True, token log probabilities are computed for each generated token.
 
         """
-        params = self.model.params
-        device = self.device
-        print(f"Performing inference in {device}")
-        start_time = time.time()
-        bsz = len(prompt_tokens)
-        assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
+        with torch.no_grad():
+            params = self.model.params
+            device = self.device
+            start_time = time.time()
+            bsz = len(prompt_tokens)
+            print(f"Performing inference in {device} with batch size: {bsz}")
+            assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
 
-        min_prompt_len = min(len(t) for t in prompt_tokens)
-        max_prompt_len = max(len(t) for t in prompt_tokens)
-        assert max_prompt_len <= params.max_seq_len
-        total_len = min(params.max_seq_len, max_gen_len + max_prompt_len)
+            min_prompt_len = min(len(t) for t in prompt_tokens)
+            max_prompt_len = max(len(t) for t in prompt_tokens)
+            assert max_prompt_len <= params.max_seq_len
+            total_len = min(params.max_seq_len, max_gen_len + max_prompt_len)
 
-        pad_id = self.tokenizer.pad_id
-        tokens = torch.full((bsz, total_len), pad_id, dtype=torch.long, device=device)
-        for k, t in enumerate(prompt_tokens):
-            tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device=device)
-        if logprobs:
-            token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
-
-        # Uncomment if you wanna profile inference with Pytorch
-        # 
-        # with profile(record_shapes=True, 
-        #             profile_memory=True,
-        #             with_flops=True) as prof:
-        prev_pos = 0
-        eos_reached = torch.tensor([False] * bsz, device=device)
-        input_text_mask = tokens != pad_id
-        if min_prompt_len == total_len:
-            logits = self.model.forward(tokens, prev_pos)
-            token_logprobs = -F.cross_entropy(
-                input=logits.transpose(1, 2),
-                target=tokens,
-                reduction="none",
-                ignore_index=pad_id,
-            )
-
-        for cur_pos in range(min_prompt_len, total_len):
-            logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
-            if temperature > 0:
-                probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
-                next_token = sample_top_p(probs, top_p)
-            else:
-                next_token = torch.argmax(logits[:, -1], dim=-1)
-
-            next_token = next_token.reshape(-1)
-            # only replace token if prompt has already been generated
-            next_token = torch.where(
-                input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
-            )
-            tokens[:, cur_pos] = next_token
+            pad_id = self.tokenizer.pad_id
+            tokens = torch.full((bsz, total_len), pad_id, dtype=torch.long, device=device)
+            for k, t in enumerate(prompt_tokens):
+                tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device=device)
             if logprobs:
-                token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
+                token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
+
+            # Uncomment if you wanna profile inference with Pytorch
+            # 
+            # with profile(record_shapes=True, 
+            #             profile_memory=True,
+            #             with_flops=True) as prof:
+            prev_pos = 0
+            eos_reached = torch.tensor([False] * bsz, device=device)
+            input_text_mask = tokens != pad_id
+            if min_prompt_len == total_len:
+                logits = self.model.forward(tokens, prev_pos)
+                token_logprobs = -F.cross_entropy(
                     input=logits.transpose(1, 2),
-                    target=tokens[:, prev_pos + 1 : cur_pos + 1],
+                    target=tokens,
                     reduction="none",
                     ignore_index=pad_id,
                 )
-            eos_reached |= (~input_text_mask[:, cur_pos]) & (
-                next_token == self.tokenizer.eos_id
-            )
-            prev_pos = cur_pos
-            if all(eos_reached):
-                break
 
-        # prof.export_chrome_trace(f"model_inference.json")
+            for cur_pos in range(min_prompt_len, total_len):
+                logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+                if temperature > 0:
+                    probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
+                    next_token = sample_top_p(probs, top_p)
+                else:
+                    next_token = torch.argmax(logits[:, -1], dim=-1)
 
-        if logprobs:
-            token_logprobs = token_logprobs.tolist()
-        out_tokens, out_logprobs = [], []
-        for i, toks in enumerate(tokens.tolist()):
-            # cut to max gen len
-            start = 0 if echo else len(prompt_tokens[i])
-            toks = toks[start : len(prompt_tokens[i]) + max_gen_len]
-            probs = None
+                next_token = next_token.reshape(-1)
+                # only replace token if prompt has already been generated
+                next_token = torch.where(
+                    input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
+                )
+                tokens[:, cur_pos] = next_token
+                if logprobs:
+                    token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
+                        input=logits.transpose(1, 2),
+                        target=tokens[:, prev_pos + 1 : cur_pos + 1],
+                        reduction="none",
+                        ignore_index=pad_id,
+                    )
+                eos_reached |= (~input_text_mask[:, cur_pos]) & (
+                    next_token == self.tokenizer.eos_id
+                )
+                prev_pos = cur_pos
+                if all(eos_reached):
+                    break
+
+            # prof.export_chrome_trace(f"model_inference.json")
+
             if logprobs:
-                probs = token_logprobs[i][start : len(prompt_tokens[i]) + max_gen_len]
-            # cut to eos tok if any
-            if self.tokenizer.eos_id in toks:
-                eos_idx = toks.index(self.tokenizer.eos_id)
-                toks = toks[:eos_idx]
-                probs = probs[:eos_idx] if logprobs else None
-            out_tokens.append(toks)
-            out_logprobs.append(probs)
+                token_logprobs = token_logprobs.tolist()
+            out_tokens, out_logprobs = [], []
+            for i, toks in enumerate(tokens.tolist()):
+                # cut to max gen len
+                start = 0 if echo else len(prompt_tokens[i])
+                toks = toks[start : len(prompt_tokens[i]) + max_gen_len]
+                probs = None
+                if logprobs:
+                    probs = token_logprobs[i][start : len(prompt_tokens[i]) + max_gen_len]
+                # cut to eos tok if any
+                if self.tokenizer.eos_id in toks:
+                    eos_idx = toks.index(self.tokenizer.eos_id)
+                    toks = toks[:eos_idx]
+                    probs = probs[:eos_idx] if logprobs else None
+                out_tokens.append(toks)
+                out_logprobs.append(probs)
 
-        elapsed_time = time.time() - start_time
-        
-        L = len(out_tokens[0])
+            latency = time.time() - start_time
+            gen_toks = [len(L) for L in out_tokens]
+            total_gen_toks = sum(gen_toks)
+            per_token_latency = latency/total_gen_toks
+            throughput = total_gen_toks/latency
 
-        print()
-        print("------ Inference metrics ------")
-        print(f"Generated tokens: {L}")
-        print(f"Latency: {elapsed_time:.2f} (s).")
-        print(f"Per-token latency: {elapsed_time/L:.2f} (s/token)")
-        print(f"Throughput: {bsz*L/elapsed_time:.2f} (tokens/s)")
-        print("-------------------------------")
-        print()
+            print()
+            print("------ Inference metrics ------")
+            print(f"Generated tokens: {total_gen_toks}")
+            print(f"Latency: {latency:.2f} (s).")
+            print(f"Per-token latency: {per_token_latency*1e3:.2f} (ms/token)")
+            print(f"Throughput: {throughput:.2f} (tokens/s)")
+            print("-------------------------------")
 
-        return (out_tokens, out_logprobs if logprobs else None)
+            metrics = {
+                "total_generated_tokens": total_gen_toks, 
+                "generated_tokens": gen_toks, 
+                "latency": latency, 
+                "per-token-latency": per_token_latency, 
+                "throughput": throughput,
+            }
+
+        return (out_tokens, out_logprobs if logprobs else None, metrics)
 
     def text_completion(
         self,
@@ -313,7 +322,7 @@ class Llama:
         if max_gen_len is None:
             max_gen_len = self.model.params.max_seq_len - 1
         prompt_tokens = [self.tokenizer.encode(x, bos=True, eos=False) for x in prompts]
-        generation_tokens, generation_logprobs = self.generate(
+        generation_tokens, generation_logprobs, generation_metrics = self.generate(
             prompt_tokens=prompt_tokens,
             max_gen_len=max_gen_len,
             temperature=temperature,
@@ -330,7 +339,7 @@ class Llama:
                 }
                 for t, logprobs_i in zip(generation_tokens, generation_logprobs)
             ]
-        return [{"generation": self.tokenizer.decode(t)} for t in generation_tokens]
+        return [{"generation": self.tokenizer.decode(t), "metrics": generation_metrics} for t in generation_tokens]
 
     def chat_completion(
         self,
@@ -412,7 +421,7 @@ class Llama:
             )
             prompt_tokens.append(dialog_tokens)
 
-        generation_tokens, generation_logprobs = self.generate(
+        generation_tokens, generation_logprobs, generation_metrics = self.generate(
             prompt_tokens=prompt_tokens,
             max_gen_len=max_gen_len,
             temperature=temperature,
@@ -430,8 +439,9 @@ class Llama:
                     },
                     "tokens": [self.tokenizer.decode(x) for x in t],
                     "logprobs": logprobs_i,
+                    "metrics": generation_metrics,
                 }
-                for t, logprobs_i, unsafe in zip(
+                for t, logprobs_i, metrics, unsafe in zip(
                     generation_tokens, generation_logprobs, unsafe_requests
                 )
             ]
@@ -440,7 +450,8 @@ class Llama:
                 "generation": {
                     "role": "assistant",
                     "content": self.tokenizer.decode(t) if not unsafe else UNSAFE_ERROR,
-                }
+                },
+                "metrics": generation_metrics,
             }
             for t, unsafe in zip(generation_tokens, unsafe_requests)
         ]
