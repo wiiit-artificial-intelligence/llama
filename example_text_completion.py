@@ -2,13 +2,17 @@
 # This software may be used and distributed according to the terms of the Llama 2 Community License Agreement.
 
 import fire
+import pandas as pd
 
 from llama import Llama
 from typing import List, Optional
 
+from prompts import get_prompts
+
 def main(
     ckpt_dir: str,
     tokenizer_path: str,
+    prompts_file: str,
     temperature: float = 0.6,
     top_p: float = 0.9,
     max_seq_len: int = 128,
@@ -37,34 +41,39 @@ def main(
         max_batch_size=max_batch_size,
         device=device,
     )
-
-    prompts: List[str] = [
-        # For these prompts, the expected answer is the natural continuation of the prompt
-        "I believe the meaning of life is",
-        # "Simply put, the theory of relativity states that ",
-        # """A brief message congratulating the team on the launch:
-
-        # Hi everyone,
-        
-        # I just """,
-        # # Few shot prompt (providing a few examples before asking model to complete more);
-        # """Translate English to Spanish:
-        
-        # juice => jugo
-        # peppermint => menta
-        # plush girafe => jirafa de peluche
-        # cheese =>""",
-    ]
+    prompts: List[str] =  get_prompts(prompt_file=prompts_file)
+    
     results = generator.text_completion(
         prompts,
         max_gen_len=max_gen_len,
         temperature=temperature,
         top_p=top_p,
     )
+
+    output_file = prompts_file.split('.')[0]
+    output = []
+
     for prompt, result in zip(prompts, results):
-        print(prompt)
-        print(f"> {result['generation']}")
-        print("\n==================================\n")
+        output.append([prompt, 
+                       result['generation'],
+                       result['metrics']['total_generated_tokens'],  
+                       result['metrics']['generated_tokens'], 
+                       result['metrics']['latency'], 
+                       result['metrics']['per-token-latency']*1e3, 
+                       result['metrics']['throughput']])
+    
+    df = pd.DataFrame(output,
+                      columns=[
+                        'prompt', 
+                        'answer', 
+                        'total_generated_tokens', 
+                        'generated_tokens', 
+                        'latency [s]', 
+                        'per_token_latency [ms/token]', 
+                        'throughput [token/s]',
+                    ])
+    
+    df.to_csv(f"{output_file}.csv", index=False)
 
 
 if __name__ == "__main__":
