@@ -32,16 +32,16 @@ You can follow the steps below to quickly get up and running with Llama 2 models
 
 1. Clone this repository.
 
-2. If you are in a CPU, raise the CPU container. Otherwise, raise the GPU container. In any case, you need to have docker and docker-compose installed.
+2. If you are in a CPU, raise the CPU container. Otherwise, raise the GPU container. In any case, **you need to have docker and docker-compose installed**.
     ```bash
-    cd .devcontainer
+    cd docker
 
     docker-compose -f docker-compose_cpu.yml up -d
     ```
 3. Open an interactive terminal in the container. 
 
     ```bash
-    docker exec -it devcontainer-llama-dev-1 /bin/bash
+    docker exec -it docker-llama-dev-1 /bin/bash
     ```
     At this point, the worker it's ready to make inference. Now, you need to download the model.
 
@@ -54,22 +54,47 @@ You can follow the steps below to quickly get up and running with Llama 2 models
     - During this process, you will be prompted to enter the URL from the email. 
     - Do not use the “Copy Link” option but rather make sure to manually copy the link from the email.
 
-7. You can test the environment running 7B model (inside container) using the command below:
+7. You can test the environment running 7B model (inside container). <br>
+Check the `run.sh` help to know how to run inference locally (single worker):
 
 ```bash
-torchrun --nproc_per_node 1 example_chat_completion.py \
-         --ckpt_dir <checkpoint_directory> \
-         --tokenizer_path <tokenizer_path> \
-         --max_seq_len 2048 \ 
-         --max_batch_size 1 \
-         --device cpu 
+bash run.sh -h
+```
+
+```bash
+This is a script to perform LLaMa tasks using torchrun.
+Usage: ./run.sh [options]
+
+Options:
+-n, --nodes                   Number of nodes.
+-i, --node-id                 Node ID in the cluster.
+-m, --master-addr             Master address. Should be the IP address of node 0.
+-p, --master-port             Master port.
+-d, --model-dir               Path to model/checkpoint directory.
+-t, --tokenizer               Path of model tokenizer.
+-task, --task                 Task to execute (chat or text).
+-device, --device             Device (cpu or cuda).
+-prompt-file, --prompt-file   File with prompts. Chechk examples in prompts/ folder.
+-temperature, --temperature   Temperature of the model. Default 0.0 (deterministic inference).
+-b, --batch                   Batch size. Defaults value. Text: 4. Chat: 6.
+-l, --max_seq_len             Maximum sequence length. Defaults value. Text: 128. Chat: 512.
+-h, --help                    Display this help and exit.
+
+Note:
+--nodes, --node-id, --master-addr, --master-port arguments should only be declared if you perform inference in more than one node.
+
+Examples:
+Chat example in a single CPU worker:
+./run.sh -task chat -d /path/to/model -t /path/to/tokenizer -device cpu -prompt-file prompts/chat_completion_example.yml
+
+Chat example in two CPU workers:
+./run.sh -task chat -n 2 -i 0 -m <node-ip-address< -p 12345 -d /path/to/model -t /path/to/tokenizer -device cpu -prompt-file prompts/chat_completion_example.yml
 ```
 
 **Note**
-- Replace  `<checkpoint_directory>` with the path to your checkpoint directory and `<tokenizer_path>` with the path to your tokenizer model.
+- Replace  `/path/to/model` with the path to your checkpoint directory and `/path/to/tokenizer` with the path to your tokenizer model.
 - The `–nproc_per_node` represents the number of workers on a node.
 - Adjust the `max_seq_len` and `max_batch_size` parameters as needed.
-- This example runs the [example_chat_completion.py](example_chat_completion.py) found in this repository but you can change that to a different .py file.
 - In case of distributed inference in more than one worker, you must repeat the above steps in each of the workers in your cluster.
 
 ## Inference
@@ -81,36 +106,16 @@ As an example, if you have a cluster with 2 nodes, to shard LLaMa 7B checkpoint 
 python utils/shard_model_checkpoint.py -n 2 -i llama-2-7b-chat/ -o llama-2-7b-chat-2-workers/
 ```
 
-2. Once you have the shards in each worker you should run:
+2. Once you have the shards in each worker you should run (inside container):
 
 - In worker-0
 ```bash
-torchrun --nproc_per_node=1 \
-         --nnodes=2 \
-         --node_rank=0 \ 
-         --master_addr=<ip-address-node-0> \
-         --master_port=12345 \
-         example_chat_completion.py \ 
-         --ckpt_dir llama-2-7b-chat-2-workers/  \
-         --tokenizer_path tokenizer.model \
-         --max_seq_len 2048 \
-         --max_batch_size 1 \
-         --device cpu 
+./run.sh -task chat -n 2 -i 0 -m <node-ip-address< -p 12345 -d /path/to/model -t /path/to/tokenizer -device cpu -prompt-file prompts/chat_completion_example.yml
 ```
 
 - In worker-1
 ```bash
-torchrun --nproc_per_node=1 \
-         --nnodes=2 \
-         --node_rank=1 \ 
-         --master_addr=<ip-address-node-0> \
-         --master_port=12345 \
-         example_chat_completion.py \
-         --ckpt_dir llama-2-7b-chat-2-workers/ \
-         --tokenizer_path tokenizer.model \
-         --max_seq_len 2048 \
-         --max_batch_size 1 \
-         --device cpu \
+./run.sh -task chat -n 2 -i 0 -m <node-ip-address< -p 12345 -d /path/to/model -t /path/to/tokenizer -device cpu -prompt-file prompts/chat_completion_example.yml
 ```
 
 ### Metrics
