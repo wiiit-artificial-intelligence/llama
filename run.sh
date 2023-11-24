@@ -28,7 +28,7 @@ show_help() {
     echo "./run.sh -task chat -d /path/to/model -t /path/to/tokenizer -device cpu -prompt-file prompts/chat_completion_example.yml"
     echo ""
     echo "Chat example in two CPU workers:"
-    echo "./run.sh -task chat -n 2 -i 0 -m <node-ip-address< -p 12345 -d /path/to/model -t /path/to/tokenizer -device cpu -prompt-file prompts/chat_completion_example.yml"
+    echo "./run.sh -task chat -n 2 -i 0 -m <node-ip-address> -p 12345 -d /path/to/model -t /path/to/tokenizer -device cpu -prompt-file prompts/chat_completion_example.yml"
     echo ""
 }
 
