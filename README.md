@@ -66,6 +66,7 @@ This is a script to perform LLaMa tasks using torchrun.
 Usage: ./run.sh [options]
 
 Options:
+-w, --nproc-per-node          Number of worker in one node. Default: 1
 -n, --nodes                   Number of nodes.
 -i, --node-id                 Node ID in the cluster.
 -m, --master-addr             Master address. Should be the IP address of node 0.
@@ -82,13 +83,16 @@ Options:
 
 Note:
 --nodes, --node-id, --master-addr, --master-port arguments should only be declared if you perform inference in more than one node.
+```
 
-Examples:
-Chat example in a single CPU worker:
-./run.sh -task chat -d /path/to/model -t /path/to/tokenizer -device cpu -prompt-file prompts/chat_completion_example.yml
-
-Chat example in two CPU workers:
-./run.sh -task chat -n 2 -i 0 -m <node-ip-address> -p 12345 -d /path/to/model -t /path/to/tokenizer -device cpu -prompt-file prompts/chat_completion_example.yml
+Locally run:
+```bash
+bash run.sh \
+       --task chat \
+       --model-dir /path/to/model \
+       --tokenizer /path/to/tokenizer \
+       --device cpu \
+       --prompt-file prompts/chat_completion_example.yml
 ```
 
 **Note**
@@ -103,19 +107,40 @@ Chat example in two CPU workers:
 1. If you wanna run LLaMa model in a generic infraestructure with more than one node, you need to shard the model checkpoints (you must have downloaded the model previously). The number of shards, would be the number of worker in the cluster. <br>
 As an example, if you have a cluster with 2 nodes, to shard LLaMa 7B checkpoint you should run (in each worker):
 ```bash
-python utils/shard_model_checkpoint.py -n 2 -i llama-2-7b-chat/ -o llama-2-7b-chat-2-workers/
+python utils/shard_model_checkpoint.py \ 
+       -n 2 \
+       -i llama-2-7b-chat/ \
+       -o llama-2-7b-chat-2-workers/
 ```
 
 2. Once you have the shards in each worker you should run (inside container):
 
 - In worker-0
 ```bash
-./run.sh -task chat -n 2 -i 0 -m <node-ip-address< -p 12345 -d /path/to/model -t /path/to/tokenizer -device cpu -prompt-file prompts/chat_completion_example.yml
+bash run.sh \
+       --task chat \
+       --nodes 2 \
+       --node-id 0 \
+       --master-addr <node0-ip-address> \
+       --master-port 12345 \
+       --model-dir /path/to/model \
+       --tokenizer /path/to/tokenizer \
+       --device cpu \
+       --prompt-file prompts/chat_completion_example.yml
 ```
 
 - In worker-1
 ```bash
-./run.sh -task chat -n 2 -i 0 -m <node-ip-address< -p 12345 -d /path/to/model -t /path/to/tokenizer -device cpu -prompt-file prompts/chat_completion_example.yml
+bash run.sh \
+       --task chat \
+       --nodes 2 \
+       --node-id 1 \
+       --master-addr <node0-ip-address> \
+       --master-port 12345 \
+       --model-dir /path/to/model \
+       --tokenizer /path/to/tokenizer \
+       --device cpu \
+       --prompt-file prompts/chat_completion_example.yml
 ```
 
 ### Metrics
