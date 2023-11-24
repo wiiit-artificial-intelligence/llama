@@ -6,6 +6,7 @@ show_help() {
     echo "Usage: ./run.sh [options]"
     echo ""
     echo "Options:"
+    echo "-w, --nproc-per-node          Number of worker in one node. Default: 1"
     echo "-n, --nodes                   Number of nodes."
     echo "-i, --node-id                 Node ID in the cluster."
     echo "-m, --master-addr             Master address. Should be the IP address of node 0."
@@ -17,7 +18,7 @@ show_help() {
     echo "-prompt-file, --prompt-file   File with prompts. Chechk examples in prompts/ folder."
     echo "-temperature, --temperature   Temperature of the model. Default 0.0 (deterministic inference)."
     echo "-b, --batch                   Batch size. Defaults value. Text: 4. Chat: 6."
-    echo "-l, --max_seq_len             Maximum sequence length. Defaults value. Text: 128. Chat: 512."
+    echo "-l, --max-seq-len             Maximum sequence length. Defaults value. Text: 128. Chat: 512."
     echo "-h, --help                    Display this help and exit."
     echo ""
     echo "Note:"
@@ -41,6 +42,7 @@ fi
 # Read input arguments and assign them to variables
 while [[ "$#" -gt 0 ]]; do
     case $1 in
+        -w|--nproc-per-node) NPROC_PER_NODE="$2"; shift ;;
         -n|--nodes) NNODES="$2"; shift ;;
         -i|--node-id) NODE_ID="$2"; shift ;;
         -m|--master-addr) MASTER_ADDRR="$2"; shift ;;
@@ -52,7 +54,7 @@ while [[ "$#" -gt 0 ]]; do
         -task|--task) TASK="$2"; shift ;;
         -b|--batch) BATCH="$2"; shift ;;
         -temp|--temperature) TEMPERATURE="$2"; shift ;;
-        -l|--max_seq_len) MAX_SEQ_LEN="$2"; shift ;;
+        -l|--max-seq-len) MAX_SEQ_LEN="$2"; shift ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
@@ -63,14 +65,16 @@ done
 case "$TASK" in
     "chat")
         EXEC_FILE="example_chat_completion.py"
+        : ${NPROC_PER_NODE:=1}
         : ${BATCH:=6}
         : ${TEMPERATURE:=0.0}
         : ${MAX_SEQ_LEN:=512}
         ;;
     "text")
         EXEC_FILE="example_text_completion.py"
+        : ${NPROC_PER_NODE:=1}
         : ${BATCH:=4}
-        : ${TEMPERATURE:=0.5}
+        : ${TEMPERATURE:=0.0}
         : ${MAX_SEQ_LEN:=128}
         ;;
     *)
@@ -81,8 +85,8 @@ esac
 
 
 if [ -n "$NNODES" ]; then
-    # Multiple worker operation
-    torchrun --nproc_per_node=1 \
+    # Multiple node operation
+    torchrun --nproc_per_node=$NPROC_PER_NODE \
             --nnodes=$NNODES \
             --node_rank=$NODE_ID \
             --master_addr=$MASTER_ADDRR \
@@ -97,8 +101,8 @@ if [ -n "$NNODES" ]; then
             --prompts_file $PROMPT_FILE
 
 else
-    # Single worker operation 
-    torchrun --nproc_per_node=1 \
+    # Single node operation 
+    torchrun --nproc_per_node=$NPROC_PER_NODE \
             $EXEC_FILE \
             --ckpt_dir $MODEL_DIR \
             --tokenizer_path $TOKENIZER_PATH \
