@@ -118,6 +118,7 @@ class Llama:
             checkpoints
         ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
         ckpt_path = checkpoints[get_model_parallel_rank()]
+        print(f"Inference will use: {torch.get_num_threads()} cores per worker")
         print(f"local-rank: {local_rank} - {ckpt_path} - {get_model_parallel_rank()}")
         checkpoint = torch.load(ckpt_path, map_location=torch.device(device=device))
         with open(Path(ckpt_dir) / "params.json", "r") as f:
