@@ -133,17 +133,11 @@ class Llama:
         tokenizer = Tokenizer(model_path=tokenizer_path)
         model_args.vocab_size = tokenizer.n_words
         if device == 'cuda':
-            torch.set_default_tensor_type(torch.cuda.HalfTensor)
+            torch.set_default_tensor_type(torch.cuda.FloatTensor)
         else:
-            # Set-up FP32 for more than 1 worker/node/VM cause GLOO does not suport FP16.
-            # For one worker we set FP16 as default type before load checpoints due memory constrains.
-            if world_size > 1:
-                torch.set_default_dtype(torch.float32)
-            else:
-                torch.set_default_dtype(torch.bfloat16)
-        model = Transformer(model_args)
-        if device == 'cpu' and world_size == 1:
             torch.set_default_dtype(torch.float32)
+
+        model = Transformer(model_args)
         model.load_state_dict(checkpoint, strict=False)
         print(f"Shard: {ckpt_path} loaded in {time.time() - start_time:.2f} seconds")
 
@@ -204,9 +198,9 @@ class Llama:
 
             # Uncomment if you wanna profile inference with Pytorch
             # 
-            # with profile(record_shapes=True, 
-            #             profile_memory=True,
-            #             with_flops=True) as prof:
+            #with profile(record_shapes=True, 
+            #            profile_memory=True,
+            #            with_flops=True) as prof:
             prev_pos = 0
             eos_reached = torch.tensor([False] * bsz, device=device)
             input_text_mask = tokens != pad_id
@@ -247,8 +241,6 @@ class Llama:
                 if all(eos_reached):
                     break
 
-            # prof.export_chrome_trace(f"model_inference.json")
-
             if logprobs:
                 token_logprobs = token_logprobs.tolist()
             out_tokens, out_logprobs = [], []
@@ -266,7 +258,8 @@ class Llama:
                     probs = probs[:eos_idx] if logprobs else None
                 out_tokens.append(toks)
                 out_logprobs.append(probs)
-
+                    
+            #prof.export_chrome_trace(f"model_inference.json")
             latency = time.time() - start_time
             gen_toks = [len(L) for L in out_tokens]
             total_gen_toks = sum(gen_toks)
