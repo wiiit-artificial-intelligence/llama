@@ -162,3 +162,5 @@ llama-2-7b*
 models/llama-2-7b*
 tokenizer*
 *.json
+!devcontainer.json
+!params.json

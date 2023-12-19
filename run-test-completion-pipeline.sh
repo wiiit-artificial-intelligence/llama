@@ -11,5 +11,5 @@ torchrun \
     --max_batch_size 4 \
     --prompts_file prompts/text_completion_example.yml \
     --temperature 0 \
-    --load_weigts False \
+    --load_weights False \
     --model_flavor pipellama2
