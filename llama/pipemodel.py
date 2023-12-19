@@ -263,32 +263,36 @@ class Attention(nn.Module):
             )
             self.wo.weight = self.wo_
         else:
-            # self.wq = nn.Linear(
-            #     args.dim,
-            #     args.n_heads * self.head_dim,
-            #     bias=False,)
-            self.wq = lambda x: F.linear(x, weight=self.wq_, bias=None)
+            self.wq = nn.Linear(
+                args.dim,
+                args.n_heads * self.head_dim,
+                bias=False,)
+            self.wq.weight = self.wq_
+            # self.wq = lambda x: F.linear(x, weight=self.wq_, bias=None)
 
-            # self.wk = nn.Linear(
-            #     args.dim,
-            #     self.n_kv_heads * self.head_dim,
-            #     bias=False,
-            # )
-            self.wk = lambda x: F.linear(x, weight=self.wk_, bias=None)
+            self.wk = nn.Linear(
+                args.dim,
+                self.n_kv_heads * self.head_dim,
+                bias=False,
+            )
+            self.wk.weight = self.wk_
+            # self.wk = lambda x: F.linear(x, weight=self.wk_, bias=None)
 
-            # self.wv = nn.Linear(
-            #     args.dim,
-            #     self.n_kv_heads * self.head_dim,
-            #     bias=False,
-            # )
-            self.wv = lambda x: F.linear(x, weight=self.wv_, bias=None)
+            self.wv = nn.Linear(
+                args.dim,
+                self.n_kv_heads * self.head_dim,
+                bias=False,
+            )
+            self.wv.weight = self.wv_
+            # self.wv = lambda x: F.linear(x, weight=self.wv_, bias=None)
 
-            # self.wo = nn.Linear(
-            #     args.n_heads * self.head_dim,
-            #     args.dim,
-            #     bias=False,
-            # )
-            self.wo = lambda x: F.linear(x, weight=self.wo_, bias=None)
+            self.wo = nn.Linear(
+                args.n_heads * self.head_dim,
+                args.dim,
+                bias=False,
+            )
+            self.wo.weight = self.wo_
+            # self.wo = lambda x: F.linear(x, weight=self.wo_, bias=None)
 
         self.cache_k = torch.zeros(
             (
@@ -398,14 +402,17 @@ class FeedForward(nn.Module):
             self.w3_ = Parameter(torch.randn((hidden_dim, dim)))
 
         if args is not None and args.tensor_parallel == False:
-            # self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-            self.w1 = lambda x: F.linear(x, weight=self.w1_, bias=None)
+            self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+            self.w1.weight = self.w1_
+            # self.w1 = lambda x: F.linear(x, weight=self.w1_, bias=None)
             
-            # self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-            self.w2 = lambda x: F.linear(x, weight=self.w2_, bias=None)
+            self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+            self.w2.weight = self.w2_
+            # self.w2 = lambda x: F.linear(x, weight=self.w2_, bias=None)
 
-            # self.w3 = nn.Linear(dim, hidden_dim, bias=False)
-            self.w3 = lambda x: F.linear(x, weight=self.w3_, bias=None)
+            self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+            self.w3.weight = self.w3_
+            # self.w3 = lambda x: F.linear(x, weight=self.w3_, bias=None)
         else:
             self.w1 = ColumnParallelLinear(
                 dim, 
@@ -644,11 +651,13 @@ class Transformer(nn.Module):
                 layer.start_pos = start_pos
                 layer.freqs_cis = freqs_cis
                 layer.mask = mask
-                # h = layer(h)
+            
+            if self.params.pipeline_parallel:
+                output = self.sequential_layers(h).float()
+            else:
+                for layer in self.layers:
+                    h = layer(h)
+                h = self.norm(h)
+                output = self.output(h).float()
 
-            # h = self.norm(h)
-
-            # output = self.output(h).float()
-                
-            output = self.sequential_layers(h).float()
         return output
