@@ -1,6 +1,6 @@
 torchrun \
     --nproc_per_node=1 \
-    --nnodes=1 \
+    --nnodes=2 \
     --node_rank=0 \
     --master_addr=10.100.192.15 \
     --master_port=12345 \
@@ -12,4 +12,5 @@ torchrun \
     --prompts_file prompts/text_completion_example.yml \
     --temperature 0 \
     --load_weights False \
-    --model_flavor pipellama2
+    --model_flavor pipellama2 \
+    --profiling True

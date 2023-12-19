@@ -9,6 +9,9 @@ from typing import List, Optional
 
 from prompts import get_prompts
 
+from torch.profiler import profile
+from contextlib import nullcontext
+
 def main(
     ckpt_dir: str,
     tokenizer_path: str,
@@ -20,7 +23,8 @@ def main(
     max_batch_size: int = 4,
     device: Optional[str] = 'cpu',
     load_weights: Optional[bool] = True,
-    model_flavor: Optional[str] = 'llama2' # llama2, pipellama2
+    model_flavor: Optional[str] = 'llama2', # llama2, pipellama2
+    profiling: Optional[bool] = False
 ):
     """
     Entry point of the program for generating text using a pretrained model.
@@ -47,12 +51,15 @@ def main(
     )
     prompts: List[str] =  get_prompts(prompt_file=prompts_file)
     
-    results = generator.text_completion(
-        prompts,
-        max_gen_len=max_gen_len,
-        temperature=temperature,
-        top_p=top_p,
-    )
+    with profile(profile_memory=True, record_shapes=True, with_stack=True) if profiling else nullcontext() as prof:
+        results = generator.text_completion(
+            prompts,
+            max_gen_len=max_gen_len,
+            temperature=temperature,
+            top_p=top_p,
+        )
+    if prof is not None:
+        prof.export_chrome_trace("trace.json")
 
     output_file = prompts_file.split('.')[0]
     output = []
