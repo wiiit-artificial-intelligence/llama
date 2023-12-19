@@ -34,6 +34,7 @@ class ModelArgs:
     device: Optional[str] = 'cpu'
     tensor_parallel: Optional[bool] = False
     pipeline_parallel: Optional[bool] = True
+    pipeline_chunks: Optional[int] = 1
 
 
 class RMSNorm(torch.nn.Module):
@@ -590,7 +591,7 @@ class Transformer(nn.Module):
 
         if params.pipeline_parallel:
             world_size = int(os.environ["WORLD_SIZE"])
-            chunks = 1
+            chunks = self.params.pipeline_chunks
 
             # Transformer Block (layer) devices
             layer_devices = [torch.device(f"cpu:{cpu_id}") for cpu_id in range(world_size)]
