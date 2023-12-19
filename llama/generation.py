@@ -16,6 +16,7 @@ from fairscale.nn.model_parallel.initialize import (
     model_parallel_is_initialized,
 )
 
+import llama
 from llama.model import ModelArgs, Transformer
 from llama.tokenizer import Tokenizer
 from torch.profiler import profile
@@ -58,7 +59,9 @@ class Llama:
         max_batch_size: int,
         model_parallel_size: Optional[int] = None,
         seed: int = 1,
-        device: Optional[str] = 'cpu'
+        device: Optional[str] = 'cpu',
+        load_weights: Optional[bool] = True,
+        model_flavor: Optional[str] = 'llama2' # llama2, pipellama2
     ) -> "Llama":
         """
         Build a Llama instance by initializing and loading a pre-trained model.
@@ -111,27 +114,30 @@ class Llama:
         # seed must be the same in all processes
         torch.manual_seed(seed)        
 
+        # Load model's weights from checkpoint(s)
         start_time = time.time()
-        checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
-        assert len(checkpoints) > 0, f"no checkpoint files found in {ckpt_dir}"
-        assert model_parallel_size == len(
-            checkpoints
-        ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
-        ckpt_path = checkpoints[get_model_parallel_rank()]
+
+        if load_weights:
+            checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
+            assert len(checkpoints) > 0, f"no checkpoint files found in {ckpt_dir}"
+            assert model_parallel_size == len(
+                checkpoints
+            ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
+            ckpt_path = checkpoints[get_model_parallel_rank()]
+            
+            print(f"local-rank: {local_rank} - {ckpt_path} - {get_model_parallel_rank()}")
+            checkpoint = torch.load(ckpt_path, map_location=torch.device(device=device))
+            
         print(f"Inference will use: {torch.get_num_threads()} cores per worker")
-        print(f"local-rank: {local_rank} - {ckpt_path} - {get_model_parallel_rank()}")
-        checkpoint = torch.load(ckpt_path, map_location=torch.device(device=device))
+
         with open(Path(ckpt_dir) / "params.json", "r") as f:
             params = json.loads(f.read())
 
-        model_args: ModelArgs = ModelArgs(
-            max_seq_len=max_seq_len,
-            max_batch_size=max_batch_size,
-            device=device,
-            **params,
-        )
+        # Tokenizer
         tokenizer = Tokenizer(model_path=tokenizer_path)
-        model_args.vocab_size = tokenizer.n_words
+
+        
+
         if device == 'cuda':
             torch.set_default_tensor_type(torch.cuda.HalfTensor)
         else:
@@ -140,12 +146,42 @@ class Llama:
             if world_size > 1:
                 torch.set_default_dtype(torch.float32)
             else:
-                torch.set_default_dtype(torch.bfloat16)
-        model = Transformer(model_args)
+                # torch.set_default_dtype(torch.bfloat16)
+                torch.set_default_dtype(torch.float32)
+
+        # model selection and building
+        if model_flavor is None or model_flavor == 'llama2':
+            model_args: ModelArgs = llama.model.ModelArgs(
+                max_seq_len=max_seq_len,
+                max_batch_size=max_batch_size,
+                device=device,
+                **params,
+            )
+            model_args.vocab_size = tokenizer.n_words
+
+            model = llama.model.Transformer(model_args)
+
+        elif model_flavor == 'pipellama2':
+            model_args: ModelArgs = llama.pipemodel.ModelArgs(
+                max_seq_len=max_seq_len,
+                max_batch_size=max_batch_size,
+                device=device,
+                **params,
+            )
+            model_args.vocab_size = tokenizer.n_words
+
+            model = llama.pipemodel.Transformer(model_args)
+        else:
+            raise ValueError(f"Model flavor {model_flavor} either not supported or implmented!")
+
         if device == 'cpu' and world_size == 1:
             torch.set_default_dtype(torch.float32)
-        model.load_state_dict(checkpoint, strict=False)
-        print(f"Shard: {ckpt_path} loaded in {time.time() - start_time:.2f} seconds")
+        
+        if load_weights:
+            model.load_state_dict(checkpoint, strict=False)
+            print(f"Shard: {ckpt_path} loaded in {time.time() - start_time:.2f} seconds")
+        else:
+            print("WARNING: Model uninitialized!")
 
         return Llama(model, tokenizer, device)
 

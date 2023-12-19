@@ -20,6 +20,8 @@ def main(
     max_batch_size: int = 8,
     max_gen_len: Optional[int] = None,
     device: Optional[str] = 'cpu',
+    load_weights: Optional[bool] = True,
+    model_flavor: Optional[str] = 'llama2' # llama2, pipellama2
 ):
     """
     Entry point of the program for generating text using a pretrained model.
@@ -42,6 +44,8 @@ def main(
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
         device=device,
+        load_weights=load_weights,
+        model_flavor=model_flavor
     )
 
     dialogs: List[Dialog] = get_prompts(prompt_file=prompts_file)
