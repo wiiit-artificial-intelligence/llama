@@ -20,6 +20,8 @@ def main(
     max_batch_size: int = 8,
     max_gen_len: Optional[int] = None,
     device: Optional[str] = 'cpu',
+    do_profile: Optional[bool] = False,
+    profile_output: Optional[str] = '/app/log/test'
 ):
     """
     Entry point of the program for generating text using a pretrained model.
@@ -42,6 +44,8 @@ def main(
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
         device=device,
+        do_profile=do_profile,
+        profile_output=profile_output
     )
 
     dialogs: List[Dialog] = get_prompts(prompt_file=prompts_file)

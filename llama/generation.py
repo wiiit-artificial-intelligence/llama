@@ -18,7 +18,7 @@ from fairscale.nn.model_parallel.initialize import (
 
 from llama.model import ModelArgs, Transformer
 from llama.tokenizer import Tokenizer
-from torch.profiler import profile
+from torch.profiler import profile, ProfilerActivity
 
 Role = Literal["system", "user", "assistant"]
 
@@ -58,7 +58,9 @@ class Llama:
         max_batch_size: int,
         model_parallel_size: Optional[int] = None,
         seed: int = 1,
-        device: Optional[str] = 'cpu'
+        device: Optional[str] = 'cpu',
+        do_profile: Optional[bool] = False,
+        profile_output: Optional[str] = '/app/log/test'
     ) -> "Llama":
         """
         Build a Llama instance by initializing and loading a pre-trained model.
@@ -85,18 +87,22 @@ class Llama:
         """
         master_addr = os.environ['MASTER_ADDR']
         master_port = os.environ['MASTER_PORT']
-        local_rank = int(os.environ["RANK"])
+        rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
         backend='gloo'
         if device=='cuda':
             backend='nccl'
 
         if not torch.distributed.is_initialized():
-            torch.distributed.init_process_group(backend=backend,
-                                                 init_method=f"tcp://{master_addr}:{master_port}",
-                                                 rank=local_rank,
-                                                 world_size=world_size)
+            if backend == 'nccl':
+                torch.distributed.init_process_group(backend=backend)
+            else:
+                torch.distributed.init_process_group(backend=backend,
+                                                     init_method=f"tcp://{master_addr}:{master_port}",
+                                                     rank=rank,
+                                                     world_size=world_size)                
 
         if not model_parallel_is_initialized():
             if model_parallel_size is None:
@@ -111,6 +117,10 @@ class Llama:
         # seed must be the same in all processes
         torch.manual_seed(seed)        
 
+        if backend == 'nccl':
+            if local_rank > 0:
+                sys.stdout = open(os.devnull, "w")    
+
         start_time = time.time()
         checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
         assert len(checkpoints) > 0, f"no checkpoint files found in {ckpt_dir}"
@@ -119,7 +129,7 @@ class Llama:
         ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
         ckpt_path = checkpoints[get_model_parallel_rank()]
         print(f"Inference will use: {torch.get_num_threads()} cores per worker")
-        print(f"local-rank: {local_rank} - {ckpt_path} - {get_model_parallel_rank()}")
+        print(f"Rank: {get_model_parallel_rank()} - Checkpoint: {ckpt_path}")
         checkpoint = torch.load(ckpt_path, map_location=torch.device(device=device))
         with open(Path(ckpt_dir) / "params.json", "r") as f:
             params = json.loads(f.read())
@@ -141,12 +151,14 @@ class Llama:
         model.load_state_dict(checkpoint, strict=False)
         print(f"Shard: {ckpt_path} loaded in {time.time() - start_time:.2f} seconds")
 
-        return Llama(model, tokenizer, device)
+        return Llama(model, tokenizer, device, do_profile, profile_output)
 
-    def __init__(self, model: Transformer, tokenizer: Tokenizer, device: str):
+    def __init__(self, model: Transformer, tokenizer: Tokenizer, device: str, do_profile: bool, profile_output: str):
         self.model = model
         self.tokenizer = tokenizer
         self.device=device
+        self.do_profile=do_profile
+        self.profile_output=profile_output
 
     def generate(
         self,
@@ -196,11 +208,17 @@ class Llama:
             if logprobs:
                 token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
 
-            # Uncomment if you wanna profile inference with Pytorch
-            # 
-            #with profile(record_shapes=True, 
-            #            profile_memory=True,
-            #            with_flops=True) as prof:
+            if self.do_profile:
+                prof = profile(
+                                activities=[
+                                    ProfilerActivity.CPU,
+                                    ProfilerActivity.CUDA],
+                                record_shapes=True, 
+                                profile_memory=True,
+                                with_flops=True,
+                                with_stack=True,
+                                on_trace_ready=torch.profiler.tensorboard_trace_handler(self.profile_output))
+                prof.start()
             prev_pos = 0
             eos_reached = torch.tensor([False] * bsz, device=device)
             input_text_mask = tokens != pad_id
@@ -258,8 +276,10 @@ class Llama:
                     probs = probs[:eos_idx] if logprobs else None
                 out_tokens.append(toks)
                 out_logprobs.append(probs)
-                    
-            #prof.export_chrome_trace(f"model_inference.json")
+            
+            if self.do_profile:
+                prof.stop()        
+                
             latency = time.time() - start_time
             gen_toks = [len(L) for L in out_tokens]
             total_gen_toks = sum(gen_toks)

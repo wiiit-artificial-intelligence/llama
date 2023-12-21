@@ -6,20 +6,22 @@ show_help() {
     echo "Usage: ./run.sh [options]"
     echo ""
     echo "Options:"
-    echo "-w, --nproc-per-node          Number of worker in one node. Default: 1"
-    echo "-n, --nodes                   Number of nodes."
-    echo "-i, --node-id                 Node ID in the cluster."
-    echo "-m, --master-addr             Master address. Should be the IP address of node 0."
-    echo "-p, --master-port             Master port."
-    echo "-d, --model-dir               Path to model/checkpoint directory."
-    echo "-t, --tokenizer               Path of model tokenizer."
-    echo "-task, --task                 Task to execute (chat or text)."
-    echo "-device, --device             Device (cpu or cuda)."
-    echo "-prompt-file, --prompt-file   File with prompts. Chechk examples in prompts/ folder."
-    echo "-temperature, --temperature   Temperature of the model. Default 0.0 (deterministic inference)."
-    echo "-b, --batch                   Batch size. Defaults value. Text: 4. Chat: 6."
-    echo "-l, --max-seq-len             Maximum sequence length. Defaults value. Text: 128. Chat: 512."
-    echo "-h, --help                    Display this help and exit."
+    echo "-w, --nproc-per-node                Number of worker in one node. Default: 1"
+    echo "-n, --nodes                         Number of nodes."
+    echo "-i, --node-id                       Node ID in the cluster."
+    echo "-m, --master-addr                   Master address. Should be the IP address of node 0."
+    echo "-p, --master-port                   Master port."
+    echo "-d, --model-dir                     Path to model/checkpoint directory."
+    echo "-t, --tokenizer                     Path of model tokenizer."
+    echo "-task, --task                       Task to execute (chat or text)."
+    echo "-device, --device                   Device (cpu or cuda)."
+    echo "-prompt-file, --prompt-file         File with prompts. Chechk examples in prompts/ folder."
+    echo "-temperature, --temperature         Temperature of the model. Default 0.0 (deterministic inference)."
+    echo "-do-profile, --do-profile           Enable pytorch profiling"
+    echo "-profile-output, --profile-output   Output folder for profiling traces."
+    echo "-b, --batch                         Batch size. Defaults value. Text: 4. Chat: 6."
+    echo "-l, --max-seq-len                   Maximum sequence length. Defaults value. Text: 128. Chat: 512."
+    echo "-h, --help                          Display this help and exit."
     echo ""
     echo "Note:"
     echo "--nodes, --node-id, --master-addr, --master-port arguments should only be declared if you perform inference in more than one node."
@@ -49,11 +51,13 @@ while [[ "$#" -gt 0 ]]; do
         -p|--master-port) MASTER_PORT="$2"; shift ;;
         -d|--model-dir) MODEL_DIR="$2"; shift ;;
         -t|--tokenizer) TOKENIZER_PATH="$2"; shift ;;
-        -dev|--device) DEVICE="$2"; shift ;;
-        -pf|--prompt-file) PROMPT_FILE="$2"; shift ;;
+        -device|--device) DEVICE="$2"; shift ;;
+        -prompt-file|--prompt-file) PROMPT_FILE="$2"; shift ;;
         -task|--task) TASK="$2"; shift ;;
         -b|--batch) BATCH="$2"; shift ;;
-        -temp|--temperature) TEMPERATURE="$2"; shift ;;
+        -do-profile|--do-profile) DO_PROFILE="$2"; shift ;;
+        -profile-output|--profile-output) PROFILE_OUTPUT="$2"; shift ;;
+        -temperature|--temperature) TEMPERATURE="$2"; shift ;;
         -l|--max-seq-len) MAX_SEQ_LEN="$2"; shift ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
@@ -98,7 +102,9 @@ if [ -n "$NNODES" ]; then
             --max_seq_len $MAX_SEQ_LEN \
             --max_batch_size $BATCH \
             --device $DEVICE \
-            --prompts_file $PROMPT_FILE
+            --prompts_file $PROMPT_FILE \
+            --do_profile $DO_PROFILE \
+            --profile_output $PROFILE_OUTPUT
 
 else
     # Single node operation 
@@ -110,6 +116,8 @@ else
             --max_seq_len $MAX_SEQ_LEN \
             --max_batch_size $BATCH \
             --device $DEVICE \
-            --prompts_file $PROMPT_FILE
+            --prompts_file $PROMPT_FILE \
+            --do_profile $DO_PROFILE \
+            --profile_output $PROFILE_OUTPUT
 
 fi
