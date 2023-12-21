@@ -41,7 +41,7 @@ You can follow the steps below to quickly get up and running with Llama 2 models
 3. Open an interactive terminal in the container. 
 
     ```bash
-    docker exec -it docker-llama-dev-1 /bin/bash
+    docker exec -it docker_llama-dev_1 /bin/bash
     ```
     At this point, the worker it's ready to make inference. Now, you need to download the model.
 
@@ -66,20 +66,22 @@ This is a script to perform LLaMa tasks using torchrun.
 Usage: ./run.sh [options]
 
 Options:
--w, --nproc-per-node          Number of worker in one node. Default: 1
--n, --nodes                   Number of nodes.
--i, --node-id                 Node ID in the cluster.
--m, --master-addr             Master address. Should be the IP address of node 0.
--p, --master-port             Master port.
--d, --model-dir               Path to model/checkpoint directory.
--t, --tokenizer               Path of model tokenizer.
--task, --task                 Task to execute (chat or text).
--device, --device             Device (cpu or cuda).
--prompt-file, --prompt-file   File with prompts. Chechk examples in prompts/ folder.
--temperature, --temperature   Temperature of the model. Default 0.0 (deterministic inference).
--b, --batch                   Batch size. Defaults value. Text: 4. Chat: 6.
--l, --max_seq_len             Maximum sequence length. Defaults value. Text: 128. Chat: 512.
--h, --help                    Display this help and exit.
+-w, --nproc-per-node                Number of worker in one node. Default: 1
+-n, --nodes                         Number of nodes.
+-i, --node-id                       Node ID in the cluster.
+-m, --master-addr                   Master address. Should be the IP address of node 0.
+-p, --master-port                   Master port.
+-d, --model-dir                     Path to model/checkpoint directory.
+-t, --tokenizer                     Path of model tokenizer.
+-task, --task                       Task to execute (chat or text).
+-device, --device                   Device (cpu or cuda).
+-prompt-file, --prompt-file         File with prompts. Chechk examples in prompts/ folder.
+-temperature, --temperature         Temperature of the model. Default 0.0 (deterministic inference).
+-do-profile, --do-profile           Enable pytorch profiling
+-profile-output, --profile-output   Output folder for profiling traces.
+-b, --batch                         Batch size. Defaults value. Text: 4. Chat: 6.
+-l, --max-seq-len                   Maximum sequence length. Defaults value. Text: 128. Chat: 512.
+-h, --help                          Display this help and exit.
 
 Note:
 --nodes, --node-id, --master-addr, --master-port arguments should only be declared if you perform inference in more than one node.
@@ -142,6 +144,8 @@ bash run.sh \
        --device cpu \
        --prompt-file prompts/chat_completion_example.yml
 ```
+
+In case you are running inference in Azure VMs, [here](OPERATIONAL_SCRIPTS.md) you'll find details about how to use operational scripts for this cloud provider.
 
 ### Metrics
 
