@@ -1,0 +1,22 @@
+version: "3"
+services:
+  dev:
+    image: wiiit/llama-gpu:pytorch.v23.04-py3
+    container_name: dev-llama2-$USER
+    # mem_limit: 8192m
+    volumes:
+      - ..:/workspace
+    # ports:
+    #   - "80:80"
+    #   - "8000:8000"
+    network_mode: "host"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    stdin_open: true # docker run -i
+    tty: true        # docker run -t
+    command: ["/bin/bash"]

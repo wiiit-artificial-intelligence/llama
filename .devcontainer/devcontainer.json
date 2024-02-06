@@ -1,0 +1,21 @@
+{
+    // using docker-compose:
+    "dockerComposeFile": "./docker-compose.yml",
+    "service": "dev",
+    "workspaceFolder": "/workspace",
+    "shutdownAction": "stopCompose",
+    "initializeCommand": "ls",
+    // dev container params
+    "forwardPorts": [3000, 8888],
+    "customizations": {
+      // Configure properties specific to VS Code.
+      "vscode": {
+        // Add the IDs of extensions you want installed when the container is created.
+        "extensions": [
+            "ms-python.python",
+            "ms-python.vscode-pylance",
+            "ms-toolsai.jupyter"
+        ]
+      }
+    }
+  }

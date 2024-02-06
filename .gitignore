@@ -161,4 +161,12 @@ cython_debug/
 llama-2-*
 models/*
 tokenizer*
-*.json
+# *.json
+
+# outputs
+prompts/*.csv
+*.log
+
+# temp
+temp/*
+*.temp
