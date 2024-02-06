@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Literal, Optional, Tuple, TypedDict
+from typing import List, Literal, Optional, Tuple, TypedDict, Union
 
 import torch
 import torch.nn.functional as F
@@ -60,7 +60,10 @@ class Llama:
         seed: int = 1,
         device: Optional[str] = 'cpu',
         do_profile: Optional[bool] = False,
-        profile_output: Optional[str] = '/app/log/test'
+        profile_output: Optional[str] = '/app/log/test',
+        init_method: Optional[str] = 'checkpoint', # checkpoint file, random
+        data_type: Optional[Union[str, object]] = None
+
     ) -> "Llama":
         """
         Build a Llama instance by initializing and loading a pre-trained model.
@@ -85,16 +88,24 @@ class Llama:
             and loads the pre-trained model and tokenizer.
 
         """
+        # distributed configuration parameters
         master_addr = os.environ['MASTER_ADDR']
         master_port = os.environ['MASTER_PORT']
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
-        backend='gloo'
-        if device=='cuda':
+        # communication backend selection according device
+        if device == 'cuda':
             backend='nccl'
+        elif device == 'cpu':
+            backend = 'gloo'
+        else:
+            raise ValueError(f'Invalid device type: {device}')
+        print(f"Model device: {device}")
+        print(f"Communication backend: {backend}")
 
+        # init distributed execution
         if not torch.distributed.is_initialized():
             if backend == 'nccl':
                 torch.distributed.init_process_group(backend=backend)
@@ -117,20 +128,31 @@ class Llama:
         # seed must be the same in all processes
         torch.manual_seed(seed)        
 
+        # disable terminal outputs for ranks > 0
         if backend == 'nccl':
             if local_rank > 0:
                 sys.stdout = open(os.devnull, "w")    
 
+        # weights initialization
         start_time = time.time()
-        checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
-        assert len(checkpoints) > 0, f"no checkpoint files found in {ckpt_dir}"
-        assert model_parallel_size == len(
-            checkpoints
-        ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
-        ckpt_path = checkpoints[get_model_parallel_rank()]
+
+        if init_method == 'checkpoint':
+            checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
+            assert len(checkpoints) > 0, f"no checkpoint files found in {ckpt_dir}"
+            assert model_parallel_size == len(checkpoints), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
+
+            ckpt_path = checkpoints[get_model_parallel_rank()]
+            
+            print(f"Rank: {get_model_parallel_rank()} - Checkpoint: {ckpt_path}")
+            checkpoint = torch.load(ckpt_path, map_location=torch.device(device=device))
+        elif init_method == 'random':
+            pass
+        else:
+            raise ValueError(f'Init method `{init_method}` not supported!')
+
         print(f"Inference will use: {torch.get_num_threads()} cores per worker")
-        print(f"Rank: {get_model_parallel_rank()} - Checkpoint: {ckpt_path}")
-        checkpoint = torch.load(ckpt_path, map_location=torch.device(device=device))
+
+        # load model params
         with open(Path(ckpt_dir) / "params.json", "r") as f:
             params = json.loads(f.read())
 
@@ -138,18 +160,51 @@ class Llama:
             max_seq_len=max_seq_len,
             max_batch_size=max_batch_size,
             device=device,
+            init_method=init_method,
             **params,
         )
+
+        # tokenizer
         tokenizer = Tokenizer(model_path=tokenizer_path)
         model_args.vocab_size = tokenizer.n_words
-        if device == 'cuda':
-            torch.set_default_tensor_type(torch.cuda.FloatTensor)
-        else:
-            torch.set_default_dtype(torch.float32)
 
+        # data type
+        if data_type is None or (isinstance(data_type, str) and data_type == 'default'):
+            # default data types
+            if device == 'cuda':
+                data_type = torch.cuda.FloatTensor
+                torch.set_default_tensor_type(data_type)
+            else:
+                data_type = torch.float32
+                torch.set_default_dtype(data_type)
+        elif isinstance(data_type, str):
+            if device == 'cuda' and 'cuda.' in data_type:
+                data_type = getattr(torch.cuda, data_type.removeprefix('cuda.'))
+                torch.set_default_tensor_type(data_type)
+            elif device == 'cuda':
+                data_type = getattr(torch, data_type)
+                torch.set_default_tensor_type(data_type)
+            else:
+                data_type = getattr(torch, data_type)
+                torch.set_default_dtype(data_type)
+        elif isinstance(data_type, object):
+            if device == 'cuda':
+                torch.set_default_tensor_type(data_type)
+            else:
+                torch.set_default_dtype(data_type)
+        else:
+            raise ValueError(f"Data type `{data_type}` not supported!")
+        
+        print(f"Model data type (default dtype): {data_type}")
+
+        # model instanciation
         model = Transformer(model_args)
-        model.load_state_dict(checkpoint, strict=False)
-        print(f"Shard: {ckpt_path} loaded in {time.time() - start_time:.2f} seconds")
+
+        if init_method == 'checkpoint':
+            model.load_state_dict(checkpoint, strict=False)
+            print(f"Shard: {ckpt_path} loaded in {time.time() - start_time:.2f} seconds")
+        else:
+            print("WARNING: Model initialized without a checkpoint!")
 
         return Llama(model, tokenizer, device, do_profile, profile_output)
 

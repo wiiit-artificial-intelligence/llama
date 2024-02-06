@@ -41,6 +41,10 @@ if [[ $# -eq 0 ]] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     exit 0
 fi
 
+# default values
+INIT_METHOD="checkpoint"
+DATA_TYPE="default"
+
 # Read input arguments and assign them to variables
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -59,6 +63,8 @@ while [[ "$#" -gt 0 ]]; do
         -profile-output|--profile-output) PROFILE_OUTPUT="$2"; shift ;;
         -temperature|--temperature) TEMPERATURE="$2"; shift ;;
         -l|--max-seq-len) MAX_SEQ_LEN="$2"; shift ;;
+        -init|--init-method) INIT_METHOD="$2"; shift ;;
+        -dtype|--data-type) DATA_TYPE="$2"; shift ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
@@ -104,7 +110,9 @@ if [ -n "$NNODES" ]; then
             --device $DEVICE \
             --prompts_file $PROMPT_FILE \
             --do_profile $DO_PROFILE \
-            --profile_output $PROFILE_OUTPUT
+            --profile_output $PROFILE_OUTPUT \
+            --init_method $INIT_METHOD \
+            --data_type $DATA_TYPE
 
 else
     # Single node operation 
@@ -118,6 +126,8 @@ else
             --device $DEVICE \
             --prompts_file $PROMPT_FILE \
             --do_profile $DO_PROFILE \
-            --profile_output $PROFILE_OUTPUT
+            --profile_output $PROFILE_OUTPUT \
+            --init_method $INIT_METHOD \
+            --data_type $DATA_TYPE
 
 fi

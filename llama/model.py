@@ -14,6 +14,7 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
 )
 from torch import nn
+from torch.nn.parameter import Parameter
 
 
 @dataclass
@@ -32,6 +33,7 @@ class ModelArgs:
     device: Optional[str] = 'cuda'
     do_profile: Optional[bool] = False
     profile_output: Optional[str] = '/app/log/test'
+    init_method: Optional[str] = 'checkpoint', # checkpoint file, random
 
 
 class RMSNorm(torch.nn.Module):
@@ -207,6 +209,7 @@ class Attention(nn.Module):
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = args.dim // args.n_heads
         self.device = args.device
+        self.init_method = args.init_method
 
         self.wq = ColumnParallelLinear(
             args.dim,
@@ -236,6 +239,14 @@ class Attention(nn.Module):
             input_is_parallel=True,
             init_method=lambda x: x,
         )
+
+        if self.init_method == 'random':
+            with torch.no_grad():
+                self.wq.weight = Parameter(torch.randn((args.n_heads * self.head_dim, args.dim)))
+                self.wk.weight = Parameter(torch.randn((self.n_kv_heads * self.head_dim, args.dim)))
+                self.wv.weight = Parameter(torch.randn((self.n_kv_heads * self.head_dim, args.dim)))
+                self.wo.weight = Parameter(torch.randn((args.n_heads * self.head_dim, args.dim)))
+
 
         self.cache_k = torch.zeros(
             (
@@ -315,6 +326,7 @@ class FeedForward(nn.Module):
         hidden_dim: int,
         multiple_of: int,
         ffn_dim_multiplier: Optional[float],
+        args: Optional[ModelArgs],
     ):
         """
         Initialize the FeedForward module.
@@ -324,6 +336,7 @@ class FeedForward(nn.Module):
             hidden_dim (int): Hidden dimension of the feedforward layer.
             multiple_of (int): Value to ensure hidden dimension is a multiple of this value.
             ffn_dim_multiplier (float, optional): Custom multiplier for hidden dimension. Defaults to None.
+            args (ModelArgs): Model configuration parameters.
 
         Attributes:
             w1 (ColumnParallelLinear): Linear transformation for the first layer.
@@ -332,6 +345,8 @@ class FeedForward(nn.Module):
 
         """
         super().__init__()
+        self.init_method = args.init_method
+
         hidden_dim = int(2 * hidden_dim / 3)
         # custom dim factor multiplier
         if ffn_dim_multiplier is not None:
@@ -347,6 +362,12 @@ class FeedForward(nn.Module):
         self.w3 = ColumnParallelLinear(
             dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
         )
+
+        if self.init_method == 'random':
+            with torch.no_grad():
+                self.w1.weight = Parameter(torch.randn((hidden_dim, dim)))
+                self.w2.weight = Parameter(torch.randn((dim, hidden_dim)))
+                self.w3.weight = Parameter(torch.randn((hidden_dim, dim)))
 
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -382,6 +403,7 @@ class TransformerBlock(nn.Module):
             hidden_dim=4 * args.dim,
             multiple_of=args.multiple_of,
             ffn_dim_multiplier=args.ffn_dim_multiplier,
+            args=args,
         )
         self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
@@ -438,6 +460,7 @@ class Transformer(nn.Module):
         self.vocab_size = params.vocab_size
         self.n_layers = params.n_layers
         self.device = params.device
+        self.init_method = params.init_method
 
         self.tok_embeddings = ParallelEmbedding(
             params.vocab_size, params.dim, init_method=lambda x: x
@@ -451,6 +474,13 @@ class Transformer(nn.Module):
         self.output = ColumnParallelLinear(
             params.dim, params.vocab_size, bias=False, init_method=lambda x: x
         )
+
+        if self.init_method == 'random':
+            with torch.no_grad():
+                self.tok_embeddings.weight = Parameter(torch.Tensor(params.vocab_size, params.dim))
+                self.tok_embeddings.weight = nn.init.xavier_normal_(self.tok_embeddings.weight)
+
+                self.output.weight = Parameter(torch.randn(params.vocab_size, params.dim))
 
         self.freqs_cis = precompute_freqs_cis(
             # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096. 
