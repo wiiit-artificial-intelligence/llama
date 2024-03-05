@@ -1,6 +1,5 @@
 from flask import Flask, request, Response, jsonify
 import subprocess
-import re 
 
 from llama import Llama 
 from llama.tokenizer import Tokenizer
@@ -46,14 +45,6 @@ def initialize_generator():
         data_type='default',
     )
 
-# Regular expression to find "<0xHH>" patterns
-pattern = re.compile(r'<0x([0-9A-Fa-f]{2})>')
-
-def replace_hex(match):
-    hex_string = match.group(1)  
-    bytes_data = bytes.fromhex(hex_string)  
-    return bytes_data.decode('iso-8859-1') 
- 
 def get_dialog_token(dialogs):
     prompt_tokens = []
     unsafe_requests = []
@@ -171,19 +162,19 @@ def chat_stream():
                             echo=False)
 
             for token in tokens:
-                # Decode token
-                decoded_token = generator.tokenizer.decode_piece(token)[0]
+                # Decode token                
+                decoded_token = generator.tokenizer.sp_model.id_to_piece(token)[0]
 
                 decoded_token = decoded_token.replace("▁"," ") 
 
-                # if decoded_token == "<0x0A>":
-                #     decoded_token = decoded_token.replace("<0x0A>","\n\n")
-
-                if decoded_token == "</s>":
-                    decoded_token = decoded_token.replace("</s>","")  
+                if decoded_token.startswith("<0x") or decoded_token.startswith("</"):
+                    if decoded_token == "<0x0A>" or decoded_token == ("</s>"):
+                        decoded_token = generator.tokenizer.sp_model.detokenize(token)
+                    else:
+                        decoded_token = ""
 
                 # Yield decoded token               
-                yield decoded_token.encode('utf-8')
+                yield decoded_token
 
             if PRINT_RESULTS:
                 print(result)
@@ -193,7 +184,6 @@ def chat_stream():
     except Exception as e:
         print(e)
         return jsonify({'error': str(e)}), 500
-
 
 # Initialize the generator before starting the server
 initialize_generator()
