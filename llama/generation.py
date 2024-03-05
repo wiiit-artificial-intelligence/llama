@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Literal, Optional, Tuple, TypedDict
+from typing import List, Literal, Optional, Tuple, TypedDict, Union
 
 import torch
 import torch.nn.functional as F
@@ -18,6 +18,7 @@ from fairscale.nn.model_parallel.initialize import (
 
 from llama.model import ModelArgs, Transformer
 from llama.tokenizer import Tokenizer
+from torch.profiler import profile, ProfilerActivity
 
 Role = Literal["system", "user", "assistant"]
 
@@ -57,7 +58,12 @@ class Llama:
         max_batch_size: int,
         model_parallel_size: Optional[int] = None,
         seed: int = 1,
-        device: Optional[str] = 'cpu'
+        device: Optional[str] = 'cpu',
+        do_profile: Optional[bool] = False,
+        profile_output: Optional[str] = '/app/log/test',
+        init_method: Optional[str] = 'checkpoint', # checkpoint file, random
+        data_type: Optional[Union[str, object]] = None,
+        token_queue = None
     ) -> "Llama":
         """
         Build a Llama instance by initializing and loading a pre-trained model.
@@ -82,36 +88,73 @@ class Llama:
             and loads the pre-trained model and tokenizer.
 
         """
+        # distributed configuration parameters
+        master_addr = os.environ['MASTER_ADDR']
+        master_port = os.environ['MASTER_PORT']
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
+        # communication backend selection according device
+        if device == 'cuda':
+            backend='nccl'
+        elif device == 'cpu':
+            backend = 'gloo'
+        else:
+            raise ValueError(f'Invalid device type: {device}')
+
+        # init distributed execution
         if not torch.distributed.is_initialized():
-            if device == 'cuda':
-                torch.distributed.init_process_group("nccl")
+            if backend == 'nccl':
+                torch.distributed.init_process_group(backend=backend)
             else:
-                torch.distributed.init_process_group("gloo")
+                torch.distributed.init_process_group(backend=backend,
+                                                     init_method=f"tcp://{master_addr}:{master_port}",
+                                                     rank=rank,
+                                                     world_size=world_size)                
+
         if not model_parallel_is_initialized():
             if model_parallel_size is None:
-                model_parallel_size = int(os.environ.get("WORLD_SIZE", 1))
+                model_parallel_size = int(os.environ["WORLD_SIZE"])
             initialize_model_parallel(model_parallel_size)
 
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
         if device == 'cuda':
             torch.cuda.set_device(local_rank)
         else:
             torch.device(device)
 
         # seed must be the same in all processes
-        torch.manual_seed(seed)
+        torch.manual_seed(seed)        
 
-        if local_rank > 0:
-            sys.stdout = open(os.devnull, "w")
+        # disable terminal outputs for ranks > 0
+        if backend == 'nccl':
+            if local_rank > 0:
+                sys.stdout = open(os.devnull, "w")    
 
+        
+        print(f"Model device: {device}")
+        print(f"Communication backend: {backend}")
+        
+        # weights initialization
         start_time = time.time()
-        checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
-        assert len(checkpoints) > 0, f"no checkpoint files found in {ckpt_dir}"
-        assert model_parallel_size == len(
-            checkpoints
-        ), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
-        ckpt_path = checkpoints[get_model_parallel_rank()]
-        checkpoint = torch.load(ckpt_path, map_location=torch.device(device=device))
+
+        if init_method == 'checkpoint':
+            checkpoints = sorted(Path(ckpt_dir).glob("*.pth"))
+            assert len(checkpoints) > 0, f"no checkpoint files found in {ckpt_dir}"
+            assert model_parallel_size == len(checkpoints), f"Loading a checkpoint for MP={len(checkpoints)} but world size is {model_parallel_size}"
+
+            ckpt_path = checkpoints[get_model_parallel_rank()]
+            
+            print(f"Rank: {get_model_parallel_rank()} - Checkpoint: {ckpt_path}")
+            checkpoint = torch.load(ckpt_path, map_location=torch.device(device=device))
+        elif init_method == 'random':
+            pass
+        else:
+            raise ValueError(f'Init method `{init_method}` not supported!')
+
+        print(f"Inference will use: {torch.get_num_threads()} cores per worker")
+
+        # load model params
         with open(Path(ckpt_dir) / "params.json", "r") as f:
             params = json.loads(f.read())
 
@@ -119,28 +162,62 @@ class Llama:
             max_seq_len=max_seq_len,
             max_batch_size=max_batch_size,
             device=device,
+            init_method=init_method,
             **params,
         )
+
+        # tokenizer
         tokenizer = Tokenizer(model_path=tokenizer_path)
         model_args.vocab_size = tokenizer.n_words
-        if device == 'cuda':
-            torch.set_default_tensor_type(torch.cuda.HalfTensor)
+
+        # data type
+        if data_type is None or (isinstance(data_type, str) and data_type == 'default'):
+            # default data types
+            if device == 'cuda':
+                data_type = torch.cuda.FloatTensor
+                torch.set_default_tensor_type(data_type)
+            else:
+                data_type = torch.float32
+                torch.set_default_dtype(data_type)
+        elif isinstance(data_type, str):
+            if device == 'cuda' and 'cuda.' in data_type:
+                data_type = getattr(torch.cuda, data_type.replace('cuda.',''))
+                torch.set_default_tensor_type(data_type)
+            elif device == 'cuda':
+                data_type = getattr(torch, data_type)
+                torch.set_default_tensor_type(data_type)
+            else:
+                data_type = getattr(torch, data_type)
+                torch.set_default_dtype(data_type)
+        elif isinstance(data_type, object):
+            if device == 'cuda':
+                torch.set_default_tensor_type(data_type)
+            else:
+                torch.set_default_dtype(data_type)
         else:
-            torch.set_default_tensor_type(torch.BFloat16Tensor)
+            raise ValueError(f"Data type `{data_type}` not supported!")
+        
+        print(f"Model data type (default dtype): {data_type}")
+
+        # model instanciation
         model = Transformer(model_args)
-        if device == 'cpu':
-            torch.set_default_tensor_type(torch.FloatTensor)
-        model.load_state_dict(checkpoint, strict=False)
-        print(f"Loaded in {time.time() - start_time:.2f} seconds")
 
-        return Llama(model, tokenizer, device)
+        if init_method == 'checkpoint':
+            model.load_state_dict(checkpoint, strict=False)
+            print(f"Shard: {ckpt_path} loaded in {time.time() - start_time:.2f} seconds")
+        else:
+            print("WARNING: Model initialized without a checkpoint!")
 
-    def __init__(self, model: Transformer, tokenizer: Tokenizer, device: str):
+        return Llama(model, tokenizer, device, do_profile, profile_output, token_queue)
+
+    def __init__(self, model: Transformer, tokenizer: Tokenizer, device: str, do_profile: bool, profile_output: str, token_queue=None):
         self.model = model
         self.tokenizer = tokenizer
         self.device=device
+        self.do_profile=do_profile
+        self.profile_output=profile_output
+        self.token_queue=token_queue
 
-    @torch.inference_mode()
     def generate(
         self,
         prompt_tokens: List[List[int]],
@@ -149,6 +226,7 @@ class Llama:
         top_p: float = 0.9,
         logprobs: bool = False,
         echo: bool = False,
+        early_stop_generation: bool = True,
     ) -> Tuple[List[List[int]], Optional[List[List[float]]]]:
         """
         Generate text sequences based on provided prompts using the language generation model.
@@ -169,82 +247,204 @@ class Llama:
             If logprobs is True, token log probabilities are computed for each generated token.
 
         """
-        params = self.model.params
-        device = self.device
-        print(f"Inference using {device}")
-        bsz = len(prompt_tokens)
-        assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
+        with torch.no_grad():
+            params = self.model.params
+            device = self.device
+            start_time = time.time()
+            bsz = len(prompt_tokens)
+            print(f"Performing inference in {device} with batch size: {bsz}")
+            assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
 
-        min_prompt_len = min(len(t) for t in prompt_tokens)
-        max_prompt_len = max(len(t) for t in prompt_tokens)
-        assert max_prompt_len <= params.max_seq_len
-        total_len = min(params.max_seq_len, max_gen_len + max_prompt_len)
+            min_prompt_len = min(len(t) for t in prompt_tokens)
+            max_prompt_len = max(len(t) for t in prompt_tokens)
+            assert max_prompt_len <= params.max_seq_len
+            total_len = min(params.max_seq_len, max_gen_len + max_prompt_len)
 
-        pad_id = self.tokenizer.pad_id
-        tokens = torch.full((bsz, total_len), pad_id, dtype=torch.long, device=device)
-        for k, t in enumerate(prompt_tokens):
-            tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device=device)
-        if logprobs:
-            token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
-
-        prev_pos = 0
-        eos_reached = torch.tensor([False] * bsz, device=device)
-        input_text_mask = tokens != pad_id
-        if min_prompt_len == total_len:
-            logits = self.model.forward(tokens, prev_pos)
-            token_logprobs = -F.cross_entropy(
-                input=logits.transpose(1, 2),
-                target=tokens,
-                reduction="none",
-                ignore_index=pad_id,
-            )
-
-        for cur_pos in range(min_prompt_len, total_len):
-            logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
-            if temperature > 0:
-                probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
-                next_token = sample_top_p(probs, top_p)
-            else:
-                next_token = torch.argmax(logits[:, -1], dim=-1)
-
-            next_token = next_token.reshape(-1)
-            # only replace token if prompt has already been generated
-            next_token = torch.where(
-                input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
-            )
-            tokens[:, cur_pos] = next_token
+            pad_id = self.tokenizer.pad_id
+            tokens = torch.full((bsz, total_len), pad_id, dtype=torch.long, device=device)
+            for k, t in enumerate(prompt_tokens):
+                tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device=device)
             if logprobs:
-                token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
+                token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
+
+            if self.do_profile:
+                prof = profile(
+                                activities=[
+                                    ProfilerActivity.CPU,
+                                    ProfilerActivity.CUDA],
+                                record_shapes=True, 
+                                profile_memory=True,
+                                with_flops=True,
+                                with_stack=True,
+                                on_trace_ready=torch.profiler.tensorboard_trace_handler(self.profile_output))
+                prof.start()
+            prev_pos = 0
+            eos_reached = torch.tensor([False] * bsz, device=device)
+            input_text_mask = tokens != pad_id
+            if min_prompt_len == total_len:
+                logits = self.model.forward(tokens, prev_pos)
+                token_logprobs = -F.cross_entropy(
                     input=logits.transpose(1, 2),
-                    target=tokens[:, prev_pos + 1 : cur_pos + 1],
+                    target=tokens,
                     reduction="none",
                     ignore_index=pad_id,
                 )
-            eos_reached |= (~input_text_mask[:, cur_pos]) & (
-                next_token == self.tokenizer.eos_id
-            )
-            prev_pos = cur_pos
-            if all(eos_reached):
-                break
 
-        if logprobs:
-            token_logprobs = token_logprobs.tolist()
-        out_tokens, out_logprobs = [], []
-        for i, toks in enumerate(tokens.tolist()):
-            # cut to max gen len
-            start = 0 if echo else len(prompt_tokens[i])
-            toks = toks[start : len(prompt_tokens[i]) + max_gen_len]
-            probs = None
+            token_times = []
+            for cur_pos in range(min_prompt_len, total_len):
+                start_token_time = time.time()
+                logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+                if temperature > 0:
+                    probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
+                    next_token = sample_top_p(probs, top_p)
+                else:
+                    next_token = torch.argmax(logits[:, -1], dim=-1)
+
+                next_token = next_token.reshape(-1)
+                # only replace token if prompt has already been generated
+                next_token = torch.where(
+                    input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
+                )
+                tokens[:, cur_pos] = next_token
+                if logprobs:
+                    token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
+                        input=logits.transpose(1, 2),
+                        target=tokens[:, prev_pos + 1 : cur_pos + 1],
+                        reduction="none",
+                        ignore_index=pad_id,
+                    )
+                eos_reached |= (~input_text_mask[:, cur_pos]) & (
+                    next_token == self.tokenizer.eos_id
+                )
+                
+                prev_pos = cur_pos
+                token_times.append(time.time() - start_token_time)
+                if early_stop_generation and all(eos_reached):
+                    break
+
             if logprobs:
-                probs = token_logprobs[i][start : len(prompt_tokens[i]) + max_gen_len]
-            # cut to eos tok if any
-            if self.tokenizer.eos_id in toks:
-                eos_idx = toks.index(self.tokenizer.eos_id)
-                toks = toks[:eos_idx]
-                probs = probs[:eos_idx] if logprobs else None
-            out_tokens.append(toks)
-            out_logprobs.append(probs)
-        return (out_tokens, out_logprobs if logprobs else None)
+                token_logprobs = token_logprobs.tolist()
+            out_tokens, out_logprobs = [], []
+            for i, toks in enumerate(tokens.tolist()):
+                # cut to max gen len
+                start = 0 if echo else len(prompt_tokens[i])
+                toks = toks[start : len(prompt_tokens[i]) + max_gen_len]
+                probs = None
+                if logprobs:
+                    probs = token_logprobs[i][start : len(prompt_tokens[i]) + max_gen_len]
+                # cut to eos tok if any
+                if self.tokenizer.eos_id in toks:
+                    eos_idx = toks.index(self.tokenizer.eos_id)
+                    toks = toks[:eos_idx]
+                    probs = probs[:eos_idx] if logprobs else None
+                out_tokens.append(toks)
+                out_logprobs.append(probs)
+            
+            if self.do_profile:
+                prof.stop()        
+                
+            latency = time.time() - start_time
+            gen_toks = [len(L) for L in out_tokens]
+            total_gen_toks = max(gen_toks) * len(gen_toks)
+            valid_gen_toks = sum(gen_toks)
+            per_token_latency = latency/total_gen_toks
+            throughput = total_gen_toks/latency
+
+            print()
+            print("------ Inference metrics ------")
+            print(f"Total generated tokens: {total_gen_toks}")
+            print(f"Valid generated tokens: {valid_gen_toks}")
+            print(f"Latency: {latency:.2f} (s).")
+            print(f"TTFT: {token_times[0]*1e3:.2f} (ms).")
+            print(f"TPOT: {token_times[-1]*1e3:.2f} (ms).")
+            print(f"#forward-passes: {len(token_times)}")
+            print(f"Per-token latency: {per_token_latency*1e3:.2f} (ms/token)")
+            print(f"Throughput: {throughput:.2f} (tokens/s)")
+            print("-------------------------------")
+
+            metrics = {
+                "input_sequence_length": min_prompt_len,
+                "total_generated_tokens": total_gen_toks, 
+                "valid_generated_tokens": valid_gen_toks, 
+                "latency": latency,
+                "TTFT": token_times[0]*1e3,
+                "TPOT": token_times[-1]*1e3,
+                "forward_passes":len(token_times),
+                "per-token-latency": per_token_latency, 
+                "throughput": throughput,
+            }
+
+        return (out_tokens, out_logprobs if logprobs else None, metrics)
+
+    def generate_token(
+        self,
+        prompt_tokens: List[List[int]],
+        max_gen_len: int,
+        temperature: float = 0.6,
+        top_p: float = 0.9,
+        logprobs: bool = False,
+        echo: bool = False,
+        stop_token: Optional[int] = None,
+    ) -> Tuple[List[List[int]], Optional[List[List[float]]]]:
+        with torch.no_grad():
+            if stop_token is None:
+                stop_token = self.tokenizer.eos_id
+            params = self.model.params
+            device = self.device
+            bsz = len(prompt_tokens)
+            assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
+
+            min_prompt_len = min(len(t) for t in prompt_tokens)
+            max_prompt_len = max(len(t) for t in prompt_tokens)
+            assert max_prompt_len <= params.max_seq_len
+            total_len = min(params.max_seq_len, max_gen_len + max_prompt_len)
+
+            pad_id = self.tokenizer.pad_id
+            tokens = torch.full((bsz, total_len), pad_id, dtype=torch.long, device=device)
+            for k, t in enumerate(prompt_tokens):
+                tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device=device)
+            if logprobs:
+                token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
+
+            prev_pos = 0
+            stop_reached = torch.tensor([False] * bsz, device=device)
+            input_text_mask = tokens != pad_id
+
+            for cur_pos in range(min_prompt_len, total_len):
+                logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+                if logprobs:
+                    token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
+                        input=logits.transpose(1, 2),
+                        target=tokens[:, prev_pos + 1 : cur_pos + 1],
+                        reduction="none",
+                        ignore_index=pad_id,
+                    )
+                if temperature > 0:
+                    probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
+                    next_token = sample_top_p(probs, top_p)
+                else:
+                    next_token = torch.argmax(logits[:, -1], dim=-1)
+
+                next_token = next_token.reshape(-1)
+                # only replace token if prompt has already been generated
+                next_token = torch.where(
+                    input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
+                )
+                tokens[:, cur_pos] = next_token
+                stop_reached |= (~input_text_mask[:, cur_pos]) & (next_token == stop_token)
+                prev_pos = cur_pos
+
+                # yield token
+                outgoing_token = next_token.clone().detach().tolist()
+                yield outgoing_token
+
+                # token put in queue
+                if self.token_queue is not None:
+                    self.token_queue.put(outgoing_token.tolist())
+
+                if all(stop_reached):
+                    break
+
 
     def text_completion(
         self,
@@ -254,6 +454,7 @@ class Llama:
         max_gen_len: Optional[int] = None,
         logprobs: bool = False,
         echo: bool = False,
+        early_stop_generation: bool = True
     ) -> List[CompletionPrediction]:
         """
         Perform text completion for a list of prompts using the language generation model.
@@ -278,13 +479,14 @@ class Llama:
         if max_gen_len is None:
             max_gen_len = self.model.params.max_seq_len - 1
         prompt_tokens = [self.tokenizer.encode(x, bos=True, eos=False) for x in prompts]
-        generation_tokens, generation_logprobs = self.generate(
+        generation_tokens, generation_logprobs, generation_metrics = self.generate(
             prompt_tokens=prompt_tokens,
             max_gen_len=max_gen_len,
             temperature=temperature,
             top_p=top_p,
             logprobs=logprobs,
             echo=echo,
+            early_stop_generation=early_stop_generation,
         )
         if logprobs:
             return [
@@ -295,7 +497,7 @@ class Llama:
                 }
                 for t, logprobs_i in zip(generation_tokens, generation_logprobs)
             ]
-        return [{"generation": self.tokenizer.decode(t)} for t in generation_tokens]
+        return [{"generation": self.tokenizer.decode(t), "metrics": generation_metrics} for t in generation_tokens]
 
     def chat_completion(
         self,
@@ -304,6 +506,7 @@ class Llama:
         top_p: float = 0.9,
         max_gen_len: Optional[int] = None,
         logprobs: bool = False,
+        early_stop_generation: bool = True,
     ) -> List[ChatPrediction]:
         """
         Generate assistant responses for a list of conversational dialogs using the language generation model.
@@ -377,7 +580,7 @@ class Llama:
             )
             prompt_tokens.append(dialog_tokens)
 
-        generation_tokens, generation_logprobs = self.generate(
+        generation_tokens, generation_logprobs, generation_metrics = self.generate(
             prompt_tokens=prompt_tokens,
             max_gen_len=max_gen_len,
             temperature=temperature,
@@ -395,8 +598,9 @@ class Llama:
                     },
                     "tokens": [self.tokenizer.decode(x) for x in t],
                     "logprobs": logprobs_i,
+                    "metrics": generation_metrics,
                 }
-                for t, logprobs_i, unsafe in zip(
+                for t, logprobs_i, metrics, unsafe in zip(
                     generation_tokens, generation_logprobs, unsafe_requests
                 )
             ]
@@ -405,7 +609,8 @@ class Llama:
                 "generation": {
                     "role": "assistant",
                     "content": self.tokenizer.decode(t) if not unsafe else UNSAFE_ERROR,
-                }
+                },
+                "metrics": generation_metrics,
             }
             for t, unsafe in zip(generation_tokens, unsafe_requests)
         ]

@@ -14,6 +14,7 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
 )
 from torch import nn
+from torch.nn.parameter import Parameter
 
 
 @dataclass
@@ -30,6 +31,9 @@ class ModelArgs:
     max_batch_size: int = 32
     max_seq_len: int = 2048
     device: Optional[str] = 'cuda'
+    do_profile: Optional[bool] = False
+    profile_output: Optional[str] = '/app/log/test'
+    init_method: Optional[str] = 'checkpoint' # checkpoint file, random
 
 
 class RMSNorm(torch.nn.Module):
@@ -205,6 +209,7 @@ class Attention(nn.Module):
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = args.dim // args.n_heads
         self.device = args.device
+        self.init_method = args.init_method
 
         self.wq = ColumnParallelLinear(
             args.dim,
@@ -234,6 +239,14 @@ class Attention(nn.Module):
             input_is_parallel=True,
             init_method=lambda x: x,
         )
+
+        if self.init_method == 'random':
+            with torch.no_grad():
+                self.wq.weight = Parameter(torch.randn(((args.n_heads * self.head_dim) // model_parallel_size, args.dim)))
+                self.wk.weight = Parameter(torch.randn(((self.n_kv_heads * self.head_dim) // model_parallel_size, args.dim)))
+                self.wv.weight = Parameter(torch.randn(((self.n_kv_heads * self.head_dim) // model_parallel_size, args.dim)))
+                self.wo.weight = Parameter(torch.randn((args.n_heads * self.head_dim, args.dim  // model_parallel_size)))
+
 
         self.cache_k = torch.zeros(
             (
@@ -313,6 +326,7 @@ class FeedForward(nn.Module):
         hidden_dim: int,
         multiple_of: int,
         ffn_dim_multiplier: Optional[float],
+        args: Optional[ModelArgs],
     ):
         """
         Initialize the FeedForward module.
@@ -322,6 +336,7 @@ class FeedForward(nn.Module):
             hidden_dim (int): Hidden dimension of the feedforward layer.
             multiple_of (int): Value to ensure hidden dimension is a multiple of this value.
             ffn_dim_multiplier (float, optional): Custom multiplier for hidden dimension. Defaults to None.
+            args (ModelArgs): Model configuration parameters.
 
         Attributes:
             w1 (ColumnParallelLinear): Linear transformation for the first layer.
@@ -330,6 +345,8 @@ class FeedForward(nn.Module):
 
         """
         super().__init__()
+        self.init_method = args.init_method
+        model_parallel_size = fs_init.get_model_parallel_world_size()
         hidden_dim = int(2 * hidden_dim / 3)
         # custom dim factor multiplier
         if ffn_dim_multiplier is not None:
@@ -345,6 +362,12 @@ class FeedForward(nn.Module):
         self.w3 = ColumnParallelLinear(
             dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
         )
+
+        if self.init_method == 'random':
+            with torch.no_grad():
+                self.w1.weight = Parameter(torch.randn((hidden_dim // model_parallel_size, dim)))
+                self.w2.weight = Parameter(torch.randn((dim, hidden_dim // model_parallel_size)))
+                self.w3.weight = Parameter(torch.randn((hidden_dim // model_parallel_size, dim)))
 
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -380,6 +403,7 @@ class TransformerBlock(nn.Module):
             hidden_dim=4 * args.dim,
             multiple_of=args.multiple_of,
             ffn_dim_multiplier=args.ffn_dim_multiplier,
+            args=args,
         )
         self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
@@ -436,6 +460,8 @@ class Transformer(nn.Module):
         self.vocab_size = params.vocab_size
         self.n_layers = params.n_layers
         self.device = params.device
+        self.init_method = params.init_method
+        model_parallel_size = fs_init.get_model_parallel_world_size()
 
         self.tok_embeddings = ParallelEmbedding(
             params.vocab_size, params.dim, init_method=lambda x: x
@@ -450,13 +476,19 @@ class Transformer(nn.Module):
             params.dim, params.vocab_size, bias=False, init_method=lambda x: x
         )
 
+        if self.init_method == 'random':
+            with torch.no_grad():
+                self.tok_embeddings.weight = Parameter(torch.Tensor(params.vocab_size, params.dim  // model_parallel_size))
+                self.tok_embeddings.weight = nn.init.xavier_normal_(self.tok_embeddings.weight)
+
+                self.output.weight = Parameter(torch.randn(params.vocab_size  // model_parallel_size, params.dim))
+
         self.freqs_cis = precompute_freqs_cis(
             # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096. 
             # Adding this multiplier instead of using 4096 directly allows for dynamism of token lengths while training or fine-tuning.
             self.params.dim // self.params.n_heads, self.params.max_seq_len * 2
         )
 
-    @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
         """
         Perform a forward pass through the Transformer model.
@@ -469,20 +501,21 @@ class Transformer(nn.Module):
             torch.Tensor: Output logits after applying the Transformer model.
 
         """
-        _bsz, seqlen = tokens.shape
-        h = self.tok_embeddings(tokens)
-        self.freqs_cis = self.freqs_cis.to(h.device)
-        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+        with torch.no_grad():
+            _bsz, seqlen = tokens.shape
+            h = self.tok_embeddings(tokens)
+            self.freqs_cis = self.freqs_cis.to(h.device)
+            freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
 
-        mask = None
-        if seqlen > 1:
-            mask = torch.full(
-                (1, 1, seqlen, seqlen), float("-inf"), device=tokens.device
-            )
-            mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
+            mask = None
+            if seqlen > 1:
+                mask = torch.full(
+                    (1, 1, seqlen, seqlen), float("-inf"), device=tokens.device
+                )
+                mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
 
-        for layer in self.layers:
-            h = layer(h, start_pos, freqs_cis, mask)
-        h = self.norm(h)
-        output = self.output(h).float()
+            for layer in self.layers:
+                h = layer(h, start_pos, freqs_cis, mask)
+            h = self.norm(h)
+            output = self.output(h).float()
         return output
