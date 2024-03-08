@@ -8,8 +8,6 @@ import pandas as pd
 
 from llama import Llama, Dialog
 
-from prompts import get_prompts
-
 def main(
     ckpt_dir: str,
     tokenizer_path: str,

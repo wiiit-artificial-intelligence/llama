@@ -4,7 +4,6 @@ from typing import List, Optional, Union
 
 import fire
 from llama import Llama, Dialog
-from prompts import get_prompts
 
 def main(
     ckpt_dir: str,

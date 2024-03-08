@@ -322,9 +322,9 @@ def models_inference(model_name):
                     logprobs=False,
                     echo=False)
 
-                tok_metrics = []
+                token_times = []
                 for token, token_time in tokens_generator:
-                    tok_metrics.append(token_time)
+                    token_times.append(token_time)
                     # Decode token                
                     decoded_token = generator.tokenizer.sp_model.id_to_piece(token)[0]
                     decoded_token = decoded_token.replace("▁"," ") 
@@ -336,12 +336,13 @@ def models_inference(model_name):
 
                 metrics={
                     "sequence_length": len(prompt_tokens[0]),
-                    "forward_passes": len(tok_metrics),
-                    "generated_tokens": len(tok_metrics),
+                    "forward_passes": len(token_times),
+                    "generated_tokens": len(token_times),
                     "latency": latency,
-                    "throughput": len(tok_metrics)/latency,
-                    "TTFT_ms": tok_metrics[0]*1e3,
-                    "TPOT_ms": tok_metrics[-1]*1e3,
+                    "throughput": len(token_times)/latency,
+                    "TTFT_ms": token_times[0]*1e3,
+                    "TPOT_ms": sum(token_times)/len(token_times),
+                    "TPOT_us_list": [tok_time * 1e6 for tok_time in token_times],
                 }
 
                 metadata = f"\n\n[METADATA]\n{json.dumps(metrics)}\n[/METADATA]\n"
