@@ -20,6 +20,8 @@ from llama.model import ModelArgs, Transformer
 from llama.tokenizer import Tokenizer
 from torch.profiler import profile, ProfilerActivity
 
+PRINT_INFERENCE_RESULTS = False
+
 Role = Literal["system", "user", "assistant"]
 
 
@@ -350,25 +352,26 @@ class Llama:
             per_token_latency = latency/total_gen_toks
             throughput = total_gen_toks/latency
 
-            print()
-            print("------ Inference metrics ------")
-            print(f"Total generated tokens: {total_gen_toks}")
-            print(f"Valid generated tokens: {valid_gen_toks}")
-            print(f"Latency: {latency:.2f} (s).")
-            print(f"TTFT: {token_times[0]*1e3:.2f} (ms).")
-            print(f"TPOT: {token_times[-1]*1e3:.2f} (ms).")
-            print(f"#forward-passes: {len(token_times)}")
-            print(f"Per-token latency: {per_token_latency*1e3:.2f} (ms/token)")
-            print(f"Throughput: {throughput:.2f} (tokens/s)")
-            print("-------------------------------")
+            if PRINT_INFERENCE_RESULTS:
+                print()
+                print("------ Inference metrics ------")
+                print(f"Total generated tokens: {total_gen_toks}")
+                print(f"Valid generated tokens: {valid_gen_toks}")
+                print(f"Latency: {latency:.2f} (s).")
+                print(f"TTFT: {token_times[0]*1e3:.2f} (ms).")
+                print(f"TPOT: {token_times[-1]*1e3:.2f} (ms).")
+                print(f"#forward-passes: {len(token_times)}")
+                print(f"Per-token latency: {per_token_latency*1e3:.2f} (ms/token)")
+                print(f"Throughput: {throughput:.2f} (tokens/s)")
+                print("-------------------------------")
 
             metrics = {
-                "input_sequence_length": min_prompt_len,
-                "total_generated_tokens": total_gen_toks, 
+                "sequence_length": min_prompt_len,
+                "generated_tokens": total_gen_toks, 
                 "valid_generated_tokens": valid_gen_toks, 
                 "latency": latency,
-                "TTFT": token_times[0]*1e3,
-                "TPOT": token_times[-1]*1e3,
+                "TTFT_ms": token_times[0]*1e3,
+                "TPOT_ms": token_times[-1]*1e3,
                 "forward_passes":len(token_times),
                 "per-token-latency": per_token_latency, 
                 "throughput": throughput,
@@ -386,6 +389,26 @@ class Llama:
         echo: bool = False,
         stop_token: Optional[int] = None,
     ) -> Tuple[List[List[int]], Optional[List[List[float]]]]:
+        """
+        Generate text sequences based on provided prompts using the language generation model.
+
+        Args:
+            prompt_tokens (List[List[int]]): List of tokenized prompts, where each prompt is represented as a list of integers.
+            max_gen_len (int): Maximum length of the generated text sequence.
+            temperature (float, optional): Temperature value for controlling randomness in sampling. Defaults to 0.6.
+            top_p (float, optional): Top-p probability threshold for nucleus sampling. Defaults to 0.9.
+            logprobs (bool, optional): Flag indicating whether to compute token log probabilities. Defaults to False.
+            echo (bool, optional): Flag indicating whether to include prompt tokens in the generated output. Defaults to False.
+            stop_token (Optional[int], optional): Token ID indicating the end of the generated sequence. Defaults to None.
+
+        Returns:
+            Tuple[List[List[int]], Optional[List[List[float]]]]: A tuple containing generated token sequences and, if logprobs is True, corresponding token log probabilities.
+
+        Note:
+            This method uses the provided prompts as a basis for generating text. It employs nucleus sampling to produce text with controlled randomness.
+            If logprobs is True, token log probabilities are computed for each generated token.
+        """
+
         with torch.no_grad():
             if stop_token is None:
                 stop_token = self.tokenizer.eos_id
@@ -411,6 +434,7 @@ class Llama:
             input_text_mask = tokens != pad_id
 
             for cur_pos in range(min_prompt_len, total_len):
+                start_token_time = time.time()
                 logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
                 if logprobs:
                     token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
@@ -434,9 +458,10 @@ class Llama:
                 stop_reached |= (~input_text_mask[:, cur_pos]) & (next_token == stop_token)
                 prev_pos = cur_pos
 
+                token_time = time.time() - start_token_time
                 # yield token
                 outgoing_token = next_token.clone().detach().tolist()
-                yield outgoing_token
+                yield outgoing_token, token_time
 
                 # token put in queue
                 if self.token_queue is not None:

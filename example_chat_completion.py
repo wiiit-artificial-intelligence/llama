@@ -1,12 +1,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # This software may be used and distributed according to the terms of the Llama 2 Community License Agreement.
 
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import fire
+import pandas as pd
 
 from llama import Llama, Dialog
 
+from prompts import get_prompts
 
 def main(
     ckpt_dir: str,
@@ -16,6 +18,11 @@ def main(
     max_seq_len: int = 512,
     max_batch_size: int = 8,
     max_gen_len: Optional[int] = None,
+    device: Optional[str] = 'cpu',
+    do_profile: Optional[bool] = False,
+    profile_output: Optional[str] = '/app/log/test',
+    init_method: Optional[str] = 'checkpoint', # checkpoint file, random
+    data_type: Optional[Union[str, object]] = None,
 ):
     """
     Entry point of the program for generating text using a pretrained model.
@@ -37,6 +44,11 @@ def main(
         tokenizer_path=tokenizer_path,
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
+        device=device,
+        do_profile=do_profile,
+        profile_output=profile_output,
+        init_method=init_method,
+        data_type=data_type,
     )
 
     dialogs: List[Dialog] = [

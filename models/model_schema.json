@@ -1,0 +1,35 @@
+{
+    "inputs": [
+        {
+            "name": "system_prompts",
+            "datatype": "list of strings",
+            "shape": []
+        },
+        {
+            "name": "user_prompts",
+            "datatype": "list of strings",
+            "shape": []
+        }
+    ],
+    "outputs": [
+        {
+            "name": "response",
+            "datatype": "list of strings",
+            "shape": []
+        },
+        {
+            "name": "metadata",
+            "datatype": "dictionary",
+            "shape": []
+        }
+    ],
+    "parameters": {
+        "temperature": "float",
+        "top_p": "float",
+        "max_seq_len": "integer",
+        "max_gen_len": "integer",
+        "seed": "integer",
+        "early_stop": "bool",
+        "task": "string"
+    }
+}

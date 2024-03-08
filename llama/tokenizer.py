@@ -66,15 +66,3 @@ class Tokenizer:
             str: The decoded string.
         """
         return self.sp_model.decode(t)
-
-    def decode_piece(self, t: List[int]) -> str:
-        """
-        Decodes a list of token IDs into a string.
-
-        Args:
-            t (List[int]): The list of token IDs to be decoded.
-
-        Returns:
-            str: The decoded string.
-        """
-        return self.sp_model.id_to_piece(t)
