@@ -341,7 +341,7 @@ def models_inference(model_name):
                     "latency": latency,
                     "throughput": len(token_times)/latency,
                     "TTFT_ms": token_times[0]*1e3,
-                    "TPOT_ms": sum(token_times)/len(token_times),
+                    "TPOT_ms": sum(token_times)/len(token_times)*1e3,
                     "TPOT_us_list": [tok_time * 1e6 for tok_time in token_times],
                 }
 
