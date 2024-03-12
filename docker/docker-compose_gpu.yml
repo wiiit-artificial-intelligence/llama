@@ -15,6 +15,7 @@ services:
             reservations:
               devices:
                 - driver: nvidia
-                  count: 1
+                  count: ${NGPUS}
                   capabilities: [gpu]
+    shm_size: '320gb'
     command: /bin/bash -c "pip install -e . && /bin/bash"

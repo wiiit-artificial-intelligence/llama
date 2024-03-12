@@ -343,9 +343,10 @@ class Llama:
                 out_logprobs.append(probs)
             
             if self.do_profile:
-                prof.stop()        
+                prof.stop()     
                 
-            latency = time.time() - start_time
+            elapsed_time = time.time() - start_time
+            latency = sum(token_times)
             gen_toks = [len(L) for L in out_tokens]
             total_gen_toks = max(gen_toks) * len(gen_toks)
             valid_gen_toks = sum(gen_toks)
@@ -358,20 +359,22 @@ class Llama:
                 print(f"Total generated tokens: {total_gen_toks}")
                 print(f"Valid generated tokens: {valid_gen_toks}")
                 print(f"Latency: {latency:.2f} (s).")
+                print(f"Elapsed time: {elapsed_time:.2f} (s).")
                 print(f"TTFT: {token_times[0]*1e3:.2f} (ms).")
-                print(f"TPOT: {sum(token_times)/len(token_times)*1e3:.2f} (ms).")
+                print(f"TPOT: {sum(token_times[1:])/(len(token_times)-1)*1e3:.2f} (ms).")
                 print(f"#forward-passes: {len(token_times)}")
                 print(f"Per-token latency: {per_token_latency*1e3:.2f} (ms/token)")
                 print(f"Throughput: {throughput:.2f} (tokens/s)")
                 print("-------------------------------")
 
             metrics = {
-                "sequence_length": min_prompt_len,
+                "prompt_length": min_prompt_len,
                 "generated_tokens": total_gen_toks, 
                 "valid_generated_tokens": valid_gen_toks, 
                 "latency": latency,
+                "elapsed_time": elapsed_time,
                 "TTFT_ms": token_times[0]*1e3,
-                "TPOT_ms": sum(token_times)/len(token_times)*1e3,
+                "TPOT_ms": sum(token_times[1:])/(len(token_times)-1)*1e3,
                 "TPOT_us_list": [tok_time * 1e6 for tok_time in token_times],
                 "forward_passes":len(token_times),
                 "per-token-latency": per_token_latency, 
@@ -470,7 +473,6 @@ class Llama:
 
                 if all(stop_reached):
                     break
-
 
     def text_completion(
         self,

@@ -1,20 +1,14 @@
-import subprocess
 from flask import Flask, request, jsonify, Response
 import os
-import sys
-import select
-import re
 import json
 import logging
 import colorlog
-import multiprocessing
-import platform
 import time
+import argparse
 
 from llama import Llama 
-from llama.tokenizer import Tokenizer
-from typing import List, Optional
 from llama import Llama, Dialog
+from typing import List
 
 SERVER_NAME = f"llama-2-pytorch"
 SERVER_VERSION = "0.1.0"
@@ -35,75 +29,12 @@ B_SYS, E_SYS = "<<SYS>>\n", "\n<</SYS>>\n\n"
 SPECIAL_TAGS = [B_INST, E_INST, "<<SYS>>", "<</SYS>>"]
 UNSAFE_ERROR = "Error: special tags are not allowed as part of the prompt."
 
-def initialize_generator(checkpoint_dir, tokenizer_path):
-    global generator  # Declare generator as global to access it outside the function
-    generator = Llama.build(
-        ckpt_dir=checkpoint_dir,
-        tokenizer_path=tokenizer_path,
-        max_seq_len=DEFAULT_MAX_SEQ_LEN,
-        max_batch_size=DEFAULT_BATCH_SIZE,
-        device=DEFAULT_DEVICE,
-        do_profile=False,
-        profile_output='/app/log/test',
-        init_method='checkpoint', # checkpoint file, random
-        data_type='default',
-    )
-
-def get_dialog_token(dialogs):
-    prompt_tokens = []
-    unsafe_requests = []
-    for dialog in dialogs:
-        unsafe_requests.append(
-            any([tag in msg["content"] for tag in SPECIAL_TAGS for msg in dialog])
-        )
-        if dialog[0]["role"] == "system":
-            dialog = [
-                {
-                    "role": dialog[1]["role"],
-                    "content": B_SYS
-                    + dialog[0]["content"]
-                    + E_SYS
-                    + dialog[1]["content"],
-                }
-            ] + dialog[2:]
-        assert all([msg["role"] == "user" for msg in dialog[::2]]) and all(
-            [msg["role"] == "assistant" for msg in dialog[1::2]]
-        ), (
-            "model only supports 'system', 'user' and 'assistant' roles, "
-            "starting with 'system', then 'user' and alternating (u/a/u/a/u...)"
-        )
-        dialog_tokens: List[int] = sum(
-            [
-                generator.tokenizer.encode(
-                    f"{B_INST} {(prompt['content']).strip()} {E_INST} {(answer['content']).strip()} ",
-                    bos=True,
-                    eos=True,
-                )
-                for prompt, answer in zip(
-                    dialog[::2],
-                    dialog[1::2],
-                )
-            ],
-            [],
-        )
-        assert (
-            dialog[-1]["role"] == "user"
-        ), f"Last message must be from user, got {dialog[-1]['role']}"
-        dialog_tokens += generator.tokenizer.encode(
-            f"{B_INST} {(dialog[-1]['content']).strip()} {E_INST}",
-            bos=True,
-            eos=False,
-        )
-        prompt_tokens.append(dialog_tokens)
-
-    return prompt_tokens
-
 # Create a logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 # Create a file handler for the log file
-file_handler = logging.FileHandler('server.log')
+file_handler = logging.FileHandler('server.log', mode="w")
 file_handler.setLevel(logging.DEBUG)
 
 # Create a console handler
@@ -152,29 +83,97 @@ if len(model_names) > 0:
 else:
     default_model = None
 
-ckpt_dir = f"{MODELS_PATH}/{DEFAULT_MODEL}/"
-tokenizer_path = f"{MODELS_PATH}/{DEFAULT_MODEL}/tokenizer.model"
+DEFAULT_CKP_DIR = f"{MODELS_PATH}/{DEFAULT_MODEL}/"
+DEFAULT_TOKENIZER_PATH = f"{MODELS_PATH}/{DEFAULT_MODEL}/tokenizer.model"
 
+## LLM Generator
+class Generator:
+    def __init__(self, 
+                 checkpoint_dir: str, 
+                 tokenizer_path: str, 
+                 max_seq_len: int = DEFAULT_MAX_SEQ_LEN,
+                 max_batch_size: int = DEFAULT_BATCH_SIZE,
+                 device: str = DEFAULT_DEVICE):
+        
+        self.checkpoint_dir = checkpoint_dir
+        self.tokenizer_path = tokenizer_path
+        self.max_seq_len = max_seq_len
+        self.max_batch_size = max_batch_size
+        self.device = device
 
-# Initialize the generator before starting the server
-initialize_generator(checkpoint_dir=ckpt_dir,
-                     tokenizer_path=tokenizer_path)
+    def init(self):
+        self.generator = Llama.build(
+            ckpt_dir=self.checkpoint_dir,
+            tokenizer_path=self.tokenizer_path,
+            max_seq_len=self.max_seq_len,
+            max_batch_size=self.max_batch_size,
+            device=self.device,
+            do_profile=False,
+            profile_output='/app/log/test',
+            init_method='checkpoint', # checkpoint file, random
+            data_type='default',
+        )
 
+    def get_dialog_token(self, dialogs):
+        prompt_tokens = []
+        unsafe_requests = []
+        for dialog in dialogs:
+            unsafe_requests.append(
+                any([tag in msg["content"] for tag in SPECIAL_TAGS for msg in dialog])
+            )
+            if dialog[0]["role"] == "system":
+                dialog = [
+                    {
+                        "role": dialog[1]["role"],
+                        "content": B_SYS
+                        + dialog[0]["content"]
+                        + E_SYS
+                        + dialog[1]["content"],
+                    }
+                ] + dialog[2:]
+            assert all([msg["role"] == "user" for msg in dialog[::2]]) and all(
+                [msg["role"] == "assistant" for msg in dialog[1::2]]
+            ), (
+                "model only supports 'system', 'user' and 'assistant' roles, "
+                "starting with 'system', then 'user' and alternating (u/a/u/a/u...)"
+            )
+            dialog_tokens: List[int] = sum(
+                [
+                    self.generator.tokenizer.encode(
+                        f"{B_INST} {(prompt['content']).strip()} {E_INST} {(answer['content']).strip()} ",
+                        bos=True,
+                        eos=True,
+                    )
+                    for prompt, answer in zip(
+                        dialog[::2],
+                        dialog[1::2],
+                    )
+                ],
+                [],
+            )
+            assert (
+                dialog[-1]["role"] == "user"
+            ), f"Last message must be from user, got {dialog[-1]['role']}"
+            dialog_tokens += self.generator.tokenizer.encode(
+                f"{B_INST} {(dialog[-1]['content']).strip()} {E_INST}",
+                bos=True,
+                eos=False,
+            )
+            prompt_tokens.append(dialog_tokens)
 
-def load_model_schema(model_name):
-    file_path = os.path.join(MODELS_PATH, model_name, "model_schema.json")
-    if os.path.exists(file_path):
-        with open(file_path, 'r') as file:
-            try:
-                schema = json.load(file)
-                return schema
-            except json.JSONDecodeError as e:
-                logger.error(f"Error loading model schema JSON file {file_path}: {e}")
-                return None
-    else:
-        logger.error(f"The model schema JSON file {file_path} does not exist!")
-        return None
+        return prompt_tokens
 
+# Instantiate generator
+model = Generator(checkpoint_dir=DEFAULT_CKP_DIR, 
+                  tokenizer_path=DEFAULT_TOKENIZER_PATH,
+                  max_seq_len=DEFAULT_MAX_SEQ_LEN,
+                  max_batch_size=DEFAULT_BATCH_SIZE,
+                  device=DEFAULT_DEVICE)
+
+# Build model
+model.init()
+
+## API functions
 def inference_request_data(data):
     errors = []
     try:
@@ -227,6 +226,20 @@ def inference_request_data(data):
         errors.append(e)
 
     return inputs, parameters, errors
+
+def load_model_schema(model_name):
+    file_path = os.path.join(MODELS_PATH, model_name, "model_schema.json")
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as file:
+            try:
+                schema = json.load(file)
+                return schema
+            except json.JSONDecodeError as e:
+                logger.error(f"Error loading model schema JSON file {file_path}: {e}")
+                return None
+    else:
+        logger.error(f"The model schema JSON file {file_path} does not exist!")
+        return None
 
 # API V2 - server - metadata
 @app.route('/v2', methods=['GET'])
@@ -283,7 +296,6 @@ def check_model_ready(model_name):
 def models_inference(model_name):  
     # get POST body data
     data = request.json
-    logger.debug(data)
     data_id = data.get("id", 0)
 
     # extract inputs and parameter for inference
@@ -293,7 +305,7 @@ def models_inference(model_name):
         # Internal Server Error
         logger.error(errors)
         return jsonify({'error': errors}), 500
-      
+    
     # inference
     if parameters["stream"]:
         # stream the inference result
@@ -306,15 +318,14 @@ def models_inference(model_name):
     
             def extract_tokens(prompts):
 
-                prompt_tokens = get_dialog_token(prompts)
+                prompt_tokens = model.get_dialog_token(prompts)
 
-                token_stream = []
                 decoded_token = ""
 
                 inference_start_time = time.time()
                 # enabling yield_token converts generate method into a generator of tokens
                 # an iteration is needed to get each token
-                tokens_generator = generator.generate_token(
+                tokens_generator = model.generator.generate_token(
                     prompt_tokens=prompt_tokens,
                     max_gen_len=parameters["max_gen_len"],
                     temperature=parameters["temperature"],
@@ -326,26 +337,33 @@ def models_inference(model_name):
                 for token, token_time in tokens_generator:
                     token_times.append(token_time)
                     # Decode token                
-                    decoded_token = generator.tokenizer.sp_model.id_to_piece(token)[0]
+                    decoded_token = model.generator.tokenizer.sp_model.id_to_piece(token)[0]
                     decoded_token = decoded_token.replace("▁"," ") 
 
                     # Yield decoded token               
                     yield decoded_token
 
-                latency = time.time() - inference_start_time
+                elapsed_time = time.time() - inference_start_time
+                latency = sum(token_times) 
 
                 metrics={
-                    "sequence_length": len(prompt_tokens[0]),
+                    "prompt_length": len(prompt_tokens[0]),
                     "forward_passes": len(token_times),
                     "generated_tokens": len(token_times),
                     "latency": latency,
+                    "elapsed_time": elapsed_time,
                     "throughput": len(token_times)/latency,
                     "TTFT_ms": token_times[0]*1e3,
-                    "TPOT_ms": sum(token_times)/len(token_times)*1e3,
+                    "TPOT_ms": sum(token_times[1:])/(len(token_times)-1)*1e3,
                     "TPOT_us_list": [tok_time * 1e6 for tok_time in token_times],
                 }
 
                 metadata = f"\n\n[METADATA]\n{json.dumps(metrics)}\n[/METADATA]\n"
+
+                for key in ['latency', 'elapsed_time', 'throughput', 'TTFT_ms', 'TPOT_ms', 'generated_tokens']:
+                    if key in metrics:
+                        logger.info(f"{key}: {metrics[key]:.2f}")
+
 
                 yield metadata
 
@@ -361,9 +379,9 @@ def models_inference(model_name):
     else:
         # wait until inference end and send the result in a single response
         logger.info("Running inference")
-
         try:
-            results = generator.chat_completion(
+
+            results = model.generator.chat_completion(
                 dialogs=inputs[0]["user_prompts"],
                 max_gen_len=parameters["max_gen_len"],
                 temperature=parameters["temperature"],
@@ -383,13 +401,21 @@ def models_inference(model_name):
                 ]
             }
 
-            print(request_reply)
+            metadata = request_reply['outputs'][0]['metadata']
+            for key in ['latency', 'elapsed_time', 'throughput', 'TTFT_ms', 'TPOT_ms', 'generated_tokens']:
+                if key in metadata:
+                    logger.info(f"{key}: {metadata[key]:.2f}")
+        
+            
+
             return jsonify(request_reply), 200
         except Exception as e:
             logger.error(e)
             return jsonify({'error': str(e)}), 500
 
+
 if __name__ == '__main__':
+
     app.run(debug=False, 
             host='0.0.0.0', 
             port=5000)
