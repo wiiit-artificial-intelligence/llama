@@ -163,16 +163,6 @@ class Generator:
 
         return prompt_tokens
 
-# Instantiate generator
-model = Generator(checkpoint_dir=DEFAULT_CKP_DIR, 
-                  tokenizer_path=DEFAULT_TOKENIZER_PATH,
-                  max_seq_len=DEFAULT_MAX_SEQ_LEN,
-                  max_batch_size=DEFAULT_BATCH_SIZE,
-                  device=DEFAULT_DEVICE)
-
-# Build model
-model.init()
-
 ## API functions
 def inference_request_data(data):
     errors = []
@@ -334,7 +324,9 @@ def models_inference(model_name):
                     echo=False)
 
                 token_times = []
+                total_generated_toks = 0
                 for token, token_time in tokens_generator:
+                    total_generated_toks += len(token)
                     token_times.append(token_time)
                     # Decode token                
                     decoded_token = model.generator.tokenizer.sp_model.id_to_piece(token)[0]
@@ -349,10 +341,10 @@ def models_inference(model_name):
                 metrics={
                     "prompt_length": len(prompt_tokens[0]),
                     "forward_passes": len(token_times),
-                    "generated_tokens": len(token_times),
+                    "generated_tokens": total_generated_toks,
                     "latency": latency,
                     "elapsed_time": elapsed_time,
-                    "throughput": len(token_times)/latency,
+                    "throughput": total_generated_toks/latency,
                     "TTFT_ms": token_times[0]*1e3,
                     "TPOT_ms": sum(token_times[1:])/(len(token_times)-1)*1e3,
                     "TPOT_us_list": [tok_time * 1e6 for tok_time in token_times],
@@ -415,6 +407,27 @@ def models_inference(model_name):
 
 
 if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint_dir", type=str, default=DEFAULT_CKP_DIR,
+                        help="Path to the checkpoint directory")
+    parser.add_argument("--tokenizer_path", type=str, default=DEFAULT_TOKENIZER_PATH,
+                        help="Path to the tokenizer file")
+    parser.add_argument("--max_seq_len", type=int, default=DEFAULT_MAX_SEQ_LEN,
+                        help="Maximum sequence lenght")
+    parser.add_argument("--max_batch_size", type=int, default=DEFAULT_BATCH_SIZE,
+                        help="Maximum batch size")
+    parser.add_argument("--device", type=str, default=DEFAULT_DEVICE,
+                        help="Device: cuda or cpu")
+    args = parser.parse_args()
+
+    model = Generator(args.checkpoint_dir, 
+                      args.tokenizer_path,
+                      args.max_seq_len,
+                      args.max_batch_size,
+                      args.device)
+
+    model.init()
 
     app.run(debug=False, 
             host='0.0.0.0', 
