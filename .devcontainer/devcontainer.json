@@ -1,6 +1,6 @@
 {
     "dockerComposeFile": "./docker-compose_cpu.yml",
-    "service": "llama-dev",
+    "service": "llama-dev-cpu",
     "workspaceFolder": "/app",
     "shutdownAction": "stopCompose",
     "customizations": {

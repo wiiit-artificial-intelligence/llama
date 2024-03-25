@@ -2,7 +2,7 @@
 version: '3.8'
 
 services:
-  llama-dev-gpu:
+  llama-gpu:
     image: wiiit/llama-gpu:pytorch.v23.04-py3
     working_dir: /app
     volumes:
@@ -17,4 +17,4 @@ services:
                 - driver: nvidia
                   count: 1
                   capabilities: [gpu]
-    command: /bin/bash -c "pip install -e . && /bin/bash"
+    command: /bin/bash -c "pip install -e . && pip install -r requirements.txt && /bin/bash"
