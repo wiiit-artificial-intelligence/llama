@@ -24,6 +24,7 @@ DEFAULT_TASK = "chat"
 DEFAULT_STREAM = int(False)
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_DEVICE = 'cuda'
+DEFAULT_BACKEND = 'nccl'
 
 B_INST, E_INST = "[INST]", "[/INST]"
 B_SYS, E_SYS = "<<SYS>>\n", "\n<</SYS>>\n\n"
@@ -94,13 +95,15 @@ class Generator:
                  tokenizer_path: str, 
                  max_seq_len: int = DEFAULT_MAX_SEQ_LEN,
                  max_batch_size: int = DEFAULT_BATCH_SIZE,
-                 device: str = DEFAULT_DEVICE):
+                 device: str = DEFAULT_DEVICE,
+                 backend: str = DEFAULT_BACKEND):
         
         self.checkpoint_dir = checkpoint_dir
         self.tokenizer_path = tokenizer_path
         self.max_seq_len = max_seq_len
         self.max_batch_size = max_batch_size
         self.device = device
+        self.backend = backend
 
     def init(self):
         self.generator = Llama.build(
@@ -109,13 +112,14 @@ class Generator:
             max_seq_len=self.max_seq_len,
             max_batch_size=self.max_batch_size,
             device=self.device,
+            backend=self.backend,
             do_profile=False,
             profile_output='/app/log/test',
             init_method='checkpoint', # checkpoint file, random
             data_type='default',
         )
 
-    def get_dialog_token(self, dialogs):
+    def dialog_tokens(self, dialogs):
         prompt_tokens = []
         unsafe_requests = []
         for dialog in dialogs:
@@ -163,6 +167,9 @@ class Generator:
             prompt_tokens.append(dialog_tokens)
 
         return prompt_tokens
+
+    def text_tokens(self,prompts):
+        return [self.generator.tokenizer.encode(x, bos=True, eos=False) for x in prompts]
 
 def inference_request_data(data):
     errors = []
@@ -230,13 +237,16 @@ if __name__ == '__main__':
                         help="Maximum batch size")
     parser.add_argument("--device", type=str, default=DEFAULT_DEVICE,
                         help="Device: cuda or cpu")
+    parser.add_argument("--backend", type=str, default=DEFAULT_BACKEND,
+                        help="Backend: nccl, gloo or mpi")
     args = parser.parse_args()
 
     model = Generator(args.checkpoint_dir, 
                           args.tokenizer_path,
                           args.max_seq_len,
                           args.max_batch_size,
-                          args.device)
+                          args.device,
+                          args.backend)
 
     model.init()
 
@@ -334,10 +344,13 @@ if __name__ == '__main__':
                         # Start the process
                         if inputs[0]["user_prompts"] is None:
                             return jsonify({'error': 'Missing or invalid input'}), 400
+
+                        if parameters['task'] == 'chat':
+                            input_prompt = model.dialog_tokens(inputs[0]["user_prompts"])
+                        elif parameters['task'] == 'generate':
+                            input_prompt = model.text_tokens(inputs[0]["user_prompts"])
                 
                         def extract_tokens(prompts):
-
-                            prompt_tokens = model.get_dialog_token(prompts)
 
                             decoded_token = ""
 
@@ -345,7 +358,7 @@ if __name__ == '__main__':
                             # enabling yield_token converts generate method into a generator of tokens
                             # an iteration is needed to get each token
                             tokens_generator = model.generator.generate_token(
-                                prompt_tokens=prompt_tokens,
+                                prompt_tokens=prompts,
                                 max_gen_len=parameters["max_gen_len"],
                                 temperature=parameters["temperature"],
                                 top_p=parameters["top_p"],
@@ -368,7 +381,7 @@ if __name__ == '__main__':
                             latency = sum(token_times) 
 
                             metrics={
-                                "prompt_length": len(prompt_tokens[0]),
+                                "prompt_length": len(prompts[0]),
                                 "forward_passes": len(token_times),
                                 "generated_tokens": total_generated_toks,
                                 "latency": latency,
@@ -388,7 +401,7 @@ if __name__ == '__main__':
 
                             yield metadata
 
-                        return Response(extract_tokens(inputs[0]["user_prompts"]), content_type='text/plain')
+                        return Response(extract_tokens(prompts=input_prompt), content_type='text/plain')
 
                     except KeyboardInterrupt:
                         # Handle keyboard interrupt (Ctrl+C)
@@ -402,13 +415,27 @@ if __name__ == '__main__':
                     logger.info("Running inference")
                     try:
 
-                        results = model.generator.chat_completion(
-                            dialogs=inputs[0]["user_prompts"],
-                            max_gen_len=parameters["max_gen_len"],
-                            temperature=parameters["temperature"],
-                            top_p=parameters["top_p"],
-                            early_stop_generation=parameters["early_stop"],
-                        )
+                        if parameters['task'] == 'chat':
+                            results = model.generator.chat_completion(
+                                dialogs=inputs[0]["user_prompts"],
+                                max_gen_len=parameters["max_gen_len"],
+                                temperature=parameters["temperature"],
+                                top_p=parameters["top_p"],
+                                early_stop_generation=parameters["early_stop"],
+                            )
+                        elif parameters['task'] == 'generate':
+                            results = model.generator.text_completion(
+                                prompts=inputs[0]["user_prompts"],
+                                max_gen_len=parameters["max_gen_len"],
+                                temperature=parameters["temperature"],
+                                top_p=parameters["top_p"],
+                                early_stop_generation=parameters["early_stop"],
+                            )
+
+                        if parameters['task'] == 'chat':
+                            response_value = results[0]['generation']['content']
+                        else:
+                            response_value = results[0]['generation']
 
                         request_reply = {
                             "model_name": model_name,
@@ -416,7 +443,7 @@ if __name__ == '__main__':
                             "id": data_id,
                             "outputs":[
                                 {
-                                    'response': results[0]['generation']['content'],
+                                    'response': response_value,
                                     'metadata': results[0]['metrics']
                                 }
                             ]
@@ -445,14 +472,22 @@ if __name__ == '__main__':
                     dist.broadcast_object_list(data, src=0)
                     inputs, parameters, errors = inference_request_data(data[0])
 
-                    model.generator.chat_completion(
-                        dialogs=inputs[0]["user_prompts"],
-                        max_gen_len=parameters["max_gen_len"],
-                        temperature=parameters["temperature"],
-                        top_p=parameters["top_p"],
-                        early_stop_generation=parameters["early_stop"],
-                    )
-
+                    if parameters['task'] == 'chat':
+                        model.generator.chat_completion(
+                            dialogs=inputs[0]["user_prompts"],
+                            max_gen_len=parameters["max_gen_len"],
+                            temperature=parameters["temperature"],
+                            top_p=parameters["top_p"],
+                            early_stop_generation=parameters["early_stop"],
+                        )
+                    elif parameters['task'] == 'generate':
+                        model.generator.chat_completion(
+                            prompts=inputs[0]["user_prompts"],
+                            max_gen_len=parameters["max_gen_len"],
+                            temperature=parameters["temperature"],
+                            top_p=parameters["top_p"],
+                            early_stop_generation=parameters["early_stop"],
+                        )
                 except:
                     pass
 
