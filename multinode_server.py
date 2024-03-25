@@ -481,7 +481,7 @@ if __name__ == '__main__':
                             early_stop_generation=parameters["early_stop"],
                         )
                     elif parameters['task'] == 'generate':
-                        model.generator.chat_completion(
+                        model.generator.text_completion(
                             prompts=inputs[0]["user_prompts"],
                             max_gen_len=parameters["max_gen_len"],
                             temperature=parameters["temperature"],
