@@ -14,6 +14,7 @@ def main(
     max_gen_len: int = 64,
     max_batch_size: int = 4,
     device: Optional[str] = 'cpu',
+    backend: Optional[str] = 'gloo',
     do_profile: Optional[bool] = False,
     profile_output: Optional[str] = '/app/log/test',
     init_method: Optional[str] = 'checkpoint', # checkpoint file, random
@@ -39,6 +40,7 @@ def main(
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
         device=device,
+        backend=backend,
         do_profile=do_profile,
         profile_output=profile_output,
         init_method=init_method,

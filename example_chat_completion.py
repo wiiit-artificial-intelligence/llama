@@ -17,6 +17,7 @@ def main(
     max_batch_size: int = 8,
     max_gen_len: Optional[int] = None,
     device: Optional[str] = 'cpu',
+    backend: Optional[str] = 'gloo',
     do_profile: Optional[bool] = False,
     profile_output: Optional[str] = '/app/log/test',
     init_method: Optional[str] = 'checkpoint', # checkpoint file, random
@@ -43,6 +44,7 @@ def main(
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
         device=device,
+        backend=backend,
         do_profile=do_profile,
         profile_output=profile_output,
         init_method=init_method,
@@ -94,6 +96,7 @@ If a question does not make any sense, or is not factually coherent, explain why
             }
         ],
     ]
+
     results = generator.chat_completion(
         dialogs,  # type: ignore
         max_gen_len=max_gen_len,

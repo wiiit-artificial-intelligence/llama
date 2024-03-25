@@ -24,6 +24,30 @@ PRINT_INFERENCE_RESULTS = False
 
 Role = Literal["system", "user", "assistant"]
 
+def get_cpu_cores():
+    """
+    Get the number of CPU cores available on the system.
+    """
+    try:
+        # For Linux/Unix systems
+        if os.name == 'posix':
+            # Get the number of cores using the command line
+            return os.cpu_count()
+        
+        # For Windows systems
+        elif os.name == 'nt':
+            # Get the number of cores using the environment variables
+            return int(os.environ["NUMBER_OF_PROCESSORS"])
+        
+        else:
+            # Unsupported operating system
+            print("Operating system not supported.")
+            return None
+        
+    except Exception as e:
+        print(f"Error occurred while retrieving CPU cores: {e}")
+        return None
+
 
 class Message(TypedDict):
     role: Role
@@ -61,6 +85,7 @@ class Llama:
         model_parallel_size: Optional[int] = None,
         seed: int = 1,
         device: Optional[str] = 'cpu',
+        backend: Optional[str] = None,
         do_profile: Optional[bool] = False,
         profile_output: Optional[str] = '/app/log/test',
         init_method: Optional[str] = 'checkpoint', # checkpoint file, random
@@ -90,24 +115,27 @@ class Llama:
             and loads the pre-trained model and tokenizer.
 
         """
-        # distributed configuration parameters
-        master_addr = os.environ['MASTER_ADDR']
-        master_port = os.environ['MASTER_PORT']
-        rank = int(os.environ["RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-
         # communication backend selection according device
         if device == 'cuda':
-            backend='nccl'
-        elif device == 'cpu':
-            backend = 'gloo'
+            if backend is None:
+                backend = 'nccl'
+        elif device == 'cpu': 
+            if backend is None:
+                backend = 'gloo'
         else:
             raise ValueError(f'Invalid device type: {device}')
 
+        if backend == 'nccl' or backend == 'gloo':
+            # distributed configuration parameters
+            master_addr = os.environ['MASTER_ADDR']
+            master_port = os.environ['MASTER_PORT']
+            rank = int(os.environ["RANK"])
+            world_size = int(os.environ["WORLD_SIZE"])
+            local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
         # init distributed execution
         if not torch.distributed.is_initialized():
-            if backend == 'nccl':
+            if backend == 'nccl' or backend == 'mpi':
                 torch.distributed.init_process_group(backend=backend)
             else:
                 torch.distributed.init_process_group(backend=backend,
@@ -117,7 +145,11 @@ class Llama:
 
         if not model_parallel_is_initialized():
             if model_parallel_size is None:
-                model_parallel_size = int(os.environ["WORLD_SIZE"])
+                if backend == 'mpi':
+                    model_parallel_size = int(os.environ["OMPI_COMM_WORLD_SIZE"])
+                    print(f"Rank: {torch.distributed.get_rank()}")
+                else:
+                    model_parallel_size = int(os.environ["WORLD_SIZE"])
             initialize_model_parallel(model_parallel_size)
 
         if device == 'cuda':
@@ -131,9 +163,11 @@ class Llama:
         # disable terminal outputs for ranks > 0
         if backend == 'nccl':
             if local_rank > 0:
-                sys.stdout = open(os.devnull, "w")    
-
-        
+                sys.stdout = open(os.devnull, "w")  
+        if backend == 'mpi':
+            if torch.distributed.get_rank() > 0:
+                sys.stdout = open(os.devnull, "w")
+    
         print(f"Model device: {device}")
         print(f"Communication backend: {backend}")
         
@@ -153,6 +187,10 @@ class Llama:
             pass
         else:
             raise ValueError(f'Init method `{init_method}` not supported!')
+
+        # For CPU inference, use all the availables cores.
+        if device == 'cpu':
+            torch.set_num_threads(get_cpu_cores())
 
         print(f"Inference will use: {torch.get_num_threads()} cores per worker")
 
