@@ -19,6 +19,7 @@ def main(
     profile_output: Optional[str] = '/app/log/test',
     init_method: Optional[str] = 'checkpoint', # checkpoint file, random
     data_type: Optional[Union[str, object]] = None,
+    print_metrics: Optional[bool] = False,
 ):
     """
     Entry point of the program for generating text using a pretrained model.
@@ -45,6 +46,7 @@ def main(
         profile_output=profile_output,
         init_method=init_method,
         data_type=data_type,
+        print_metrics=print_metrics,
     )
 
     prompts: List[str] = [

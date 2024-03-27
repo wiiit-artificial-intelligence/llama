@@ -163,4 +163,4 @@ cython_debug/
 *.pth
 *.model
 *.chk
-models/llama-2-7b-chat/params.json
+models/*/params.json

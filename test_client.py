@@ -7,7 +7,7 @@ from pprint import pprint
 # select the model to use
 MODEL_NAME = "llama-2-7b-chat"
 
-SERVER_URL = "http://127.0.0.1:5001"
+SERVER_URL = "http://127.0.0.1:5000"
 ENDPOINT_URL_INFERENCE = f"{SERVER_URL}/v2/models/{MODEL_NAME}/infer"
 
 DEFAULT_TEMPERATURE = 0.0
@@ -22,10 +22,10 @@ DEFAULT_STREAM = int(False)
 payload_chat = {
     "inputs": [
         {
-            "user_prompts": [[{"role": "user", "content": "number of planets in the solar system"}]],
-                             #[{"role": "user", "content": "Who is Albert Einstein?"}],
-                             #[{"role": "user", "content": "What is your name?"}]],
-            "system_prompts": ""
+            "user_prompts": ["number of planets in the solar system",
+                             "What is your name?"],
+            "system_prompts": ["Answer in spanish", 
+                               "Answer without using emojis"]
         }
     ],
     "parameters": {

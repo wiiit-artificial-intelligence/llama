@@ -24,6 +24,8 @@ DEFAULT_STREAM = int(False)
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_DEVICE = 'cuda'
 DEFAULT_BACKEND = 'nccl'
+DEFAULT_PRECISION = 'float32'
+DEFAULT_PRINT_METRICS = False
 
 B_INST, E_INST = "[INST]", "[/INST]"
 B_SYS, E_SYS = "<<SYS>>\n", "\n<</SYS>>\n\n"
@@ -95,7 +97,9 @@ class Generator:
                  max_seq_len: int = DEFAULT_MAX_SEQ_LEN,
                  max_batch_size: int = DEFAULT_BATCH_SIZE,
                  device: str = DEFAULT_DEVICE,
-                 backend: str = DEFAULT_BACKEND):
+                 backend: str = DEFAULT_BACKEND,
+                 precision: str = DEFAULT_PRECISION,
+                 metrics: bool = DEFAULT_PRINT_METRICS):
         
         self.checkpoint_dir = checkpoint_dir
         self.tokenizer_path = tokenizer_path
@@ -103,6 +107,8 @@ class Generator:
         self.max_batch_size = max_batch_size
         self.device = device
         self.backend = backend
+        self.precision = precision
+        self.metrics = metrics
 
     def init(self):
         self.generator = Llama.build(
@@ -115,7 +121,8 @@ class Generator:
             do_profile=False,
             profile_output='/app/log/test',
             init_method='checkpoint', # checkpoint file, random
-            data_type='default',
+            data_type=self.precision,
+            print_metrics=self.metrics,
         )
 
     def dialog_tokens(self, dialogs):
@@ -237,6 +244,22 @@ def load_model_schema(model_name):
         logger.error(f"The model schema JSON file {file_path} does not exist!")
         return None
 
+def format_chat_prompts(prompts):
+
+    user_request = [
+        [{"role": "user", "content": content}] 
+        for content in prompts[0]["user_prompts"]
+    ]
+
+    # Check if "system_prompts" exists
+    if "system_prompts" in prompts[0]:
+        system_prompts = prompts[0]["system_prompts"]
+        for i in range(len(user_request)):
+            if i < len(system_prompts):
+                user_request[i].insert(0, {"role": "system", "content": system_prompts[i]})
+
+    return user_request
+
 # API V2 - server - metadata
 @app.route('/v2', methods=['GET'])
 def get_server_metedata():
@@ -313,7 +336,8 @@ def models_inference(model_name):
                 return jsonify({'error': 'Missing or invalid input'}), 400
     
             if parameters['task'] == 'chat':
-                input_prompt = model.dialog_tokens(inputs[0]["user_prompts"])
+                user_request = format_chat_prompts(inputs)
+                input_prompt = model.dialog_tokens(user_request)
             elif parameters['task'] == 'generate':
                 input_prompt = model.text_tokens(inputs[0]["user_prompts"])
             
@@ -383,8 +407,9 @@ def models_inference(model_name):
         try:
 
             if parameters['task'] == 'chat':
+                user_request = format_chat_prompts(inputs)
                 results = model.generator.chat_completion(
-                    dialogs=inputs[0]["user_prompts"],
+                    dialogs=user_request,
                     max_gen_len=parameters["max_gen_len"],
                     temperature=parameters["temperature"],
                     top_p=parameters["top_p"],
@@ -444,6 +469,10 @@ if __name__ == '__main__':
                         help="Device: cuda or cpu")
     parser.add_argument("--backend", type=str, default=DEFAULT_BACKEND,
                         help="Backend: nccl, gloo or mpi")
+    parser.add_argument("--precision", type=str, default=DEFAULT_PRECISION,
+                        help="Precision: cuda.FloatTensor, cuda.HalfTensor, float32, bfloat16")
+    parser.add_argument("--metrics", action="store_true", help="Print inference metrics")
+
     args = parser.parse_args()
 
     model = Generator(args.checkpoint_dir, 
@@ -451,7 +480,9 @@ if __name__ == '__main__':
                       args.max_seq_len,
                       args.max_batch_size,
                       args.device,
-                      args.backend)
+                      args.backend,
+                      args.precision,
+                      args.metrics)
 
     model.init()
 
