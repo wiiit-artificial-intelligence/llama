@@ -20,8 +20,6 @@ from llama.model import ModelArgs, Transformer
 from llama.tokenizer import Tokenizer
 from torch.profiler import profile, ProfilerActivity
 
-PRINT_INFERENCE_RESULTS = False
-
 Role = Literal["system", "user", "assistant"]
 
 def get_cpu_cores():
@@ -90,7 +88,7 @@ class Llama:
         profile_output: Optional[str] = '/app/log/test',
         init_method: Optional[str] = 'checkpoint', # checkpoint file, random
         data_type: Optional[Union[str, object]] = None,
-        token_queue = None
+        print_metrics: Optional[bool] = False,
     ) -> "Llama":
         """
         Build a Llama instance by initializing and loading a pre-trained model.
@@ -248,15 +246,15 @@ class Llama:
         else:
             print("WARNING: Model initialized without a checkpoint!")
 
-        return Llama(model, tokenizer, device, do_profile, profile_output, token_queue)
+        return Llama(model, tokenizer, device, do_profile, profile_output, print_metrics)
 
-    def __init__(self, model: Transformer, tokenizer: Tokenizer, device: str, do_profile: bool, profile_output: str, token_queue=None):
+    def __init__(self, model: Transformer, tokenizer: Tokenizer, device: str, do_profile: bool, profile_output: str, print_metrics: bool):
         self.model = model
         self.tokenizer = tokenizer
         self.device=device
         self.do_profile=do_profile
         self.profile_output=profile_output
-        self.token_queue=token_queue
+        self.print_metrics=print_metrics
 
     def generate(
         self,
@@ -391,9 +389,12 @@ class Llama:
             per_token_latency = latency/total_gen_toks
             throughput = total_gen_toks/latency
 
-            if PRINT_INFERENCE_RESULTS:
+            if self.print_metrics:
                 print()
                 print("------ Inference metrics ------")
+                print(f"#request: {bsz}")
+                print(f"Prompt length: {[len(t) for t in prompt_tokens]}")
+                print(f"Generated tokens per-request: {gen_toks}")
                 print(f"Total generated tokens: {total_gen_toks}")
                 print(f"Valid generated tokens: {valid_gen_toks}")
                 print(f"Latency: {latency:.2f} (s).")
@@ -504,10 +505,6 @@ class Llama:
                 # yield token
                 outgoing_token = next_token.clone().detach().tolist()
                 yield outgoing_token, token_time
-
-                # token put in queue
-                if self.token_queue is not None:
-                    self.token_queue.put(outgoing_token.tolist())
 
                 if all(stop_reached):
                     break
